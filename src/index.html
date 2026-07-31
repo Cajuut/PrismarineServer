@@ -373,14 +373,28 @@
 
                     <div class="settings-group">
                         <h3>アップデート</h3>
-                        <div class="setting-item" style="flex-direction: column; align-items: flex-start; gap: 10px;">
-                            <div style="display: flex; align-items: center; gap: 12px; width: 100%;">
-                                <button id="check-update-btn" class="btn btn-primary btn-sm">更新を確認</button>
-                                <span id="update-status" class="info-text" style="margin: 0;">未確認</span>
+                        <div class="update-card">
+                            <div class="update-head">
+                                <div class="update-icon">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                                    </svg>
+                                </div>
+                                <div class="update-info">
+                                    <div class="update-title">アプリケーションの更新</div>
+                                    <div id="update-status" class="update-status">起動時に自動チェックします</div>
+                                </div>
+                                <button id="check-update-btn" class="btn btn-secondary btn-sm">今すぐ確認</button>
                             </div>
-                            <div id="update-actions" class="hidden" style="display: none; width: 100%;">
-                                <button id="apply-update-btn" class="btn btn-accent btn-sm">ダウンロードしてインストール</button>
-                                <span id="update-notes" class="info-text text-sm" style="display: block; margin-top: 8px;"></span>
+                            <div id="update-actions" class="update-actions hidden">
+                                <div class="update-details">
+                                    <span class="update-available-badge">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                                        v<span id="update-latest">—</span> が利用可能
+                                    </span>
+                                    <span id="update-notes" class="update-notes"></span>
+                                </div>
+                                <button id="apply-update-btn" class="btn btn-accent btn-sm">ダウンロードして更新</button>
                             </div>
                         </div>
                     </div>

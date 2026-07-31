@@ -56,6 +56,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 3. Start Background Tasks
         startMonitoring();
 
+        // 4. Auto-check for updates on startup (delay so UI settles first)
+        setTimeout(() => checkForUpdates(true), 1500);
+
         console.log('[DEBUG] App initialization complete!');
     } catch (err) {
         console.error('[DEBUG] Early initialization error:', err);
@@ -341,7 +344,7 @@ function switchTab(btn) {
     }
 }
 
-function showNotification(message, type = 'info') {
+function showNotification(message, type = 'info', duration = 4000) {
     console.log(`[NOTIFICATION][${type.toUpperCase()}] ${message}`);
 
     const existingContainer = document.getElementById('notification-container');
@@ -382,13 +385,13 @@ function showNotification(message, type = 'info') {
 
     container.appendChild(alert);
 
-    setTimeout(() => {
-        alert.style.animation = 'none';
-        alert.style.opacity = '0';
-        alert.style.transform = 'translateX(50px)';
-        alert.style.transition = 'all 0.3s ease';
-        setTimeout(() => alert.remove(), 300);
-    }, 4000);
+        setTimeout(() => {
+            alert.style.animation = 'none';
+            alert.style.opacity = '0';
+            alert.style.transform = 'translateX(50px)';
+            alert.style.transition = 'all 0.3s ease';
+            setTimeout(() => alert.remove(), 300);
+        }, duration);
 }
 
 // =============================================
@@ -401,39 +404,43 @@ async function checkForUpdates() {
     const btn = document.getElementById('check-update-btn');
     const statusEl = document.getElementById('update-status');
     const actionsEl = document.getElementById('update-actions');
+    const latestEl = document.getElementById('update-latest');
     const notesEl = document.getElementById('update-notes');
+    const isAutoCheck = arguments[0] === true;
 
-    if (!btn || !statusEl) return;
-    btn.disabled = true;
-    statusEl.textContent = '確認中...';
+    if (!statusEl) return;
+    const setStatus = (text, cls) => {
+        statusEl.textContent = text;
+        statusEl.className = 'update-status' + (cls ? ` ${cls}` : '');
+    };
+
+    if (btn && !isAutoCheck) btn.disabled = true;
+    if (!isAutoCheck) setStatus('確認中...');
 
     try {
         const info = await window.__TAURI__.core.invoke('check_for_updates');
         updateInfo = info;
 
         if (info.error) {
-            statusEl.textContent = '確認に失敗しました';
+            setStatus('確認に失敗しました', 'check-error');
             showNotification(`更新確認に失敗: ${info.error}`, 'error');
         } else if (info.available) {
-            statusEl.textContent = `v${info.latest_version} が利用可能です`;
-            if (actionsEl) {
-                actionsEl.style.display = 'flex';
-                actionsEl.style.flexDirection = 'column';
-                actionsEl.style.alignItems = 'flex-start';
-                actionsEl.style.gap = '8px';
-            }
-            if (notesEl) {
-                notesEl.textContent = `リリースノート: ${info.release_notes || 'なし'}`;
+            setStatus(`v${info.latest_version} が利用可能です`, 'has-update');
+            if (latestEl) latestEl.textContent = info.latest_version;
+            if (notesEl) notesEl.textContent = info.release_notes || 'リリースノートはありません';
+            if (actionsEl) actionsEl.classList.remove('hidden');
+            if (isAutoCheck) {
+                showNotification(`v${info.latest_version} が利用可能です。設定画面から更新できます。`, 'info', 6000);
             }
         } else {
-            statusEl.textContent = `最新版 (v${info.current_version}) です`;
-            if (actionsEl) actionsEl.style.display = 'none';
+            setStatus('最新バージョンです', 'is-latest');
+            if (actionsEl) actionsEl.classList.add('hidden');
         }
     } catch (err) {
-        statusEl.textContent = '確認に失敗しました';
-        showNotification(`更新確認に失敗: ${err}`, 'error');
+        setStatus('確認に失敗しました', 'check-error');
+        if (!isAutoCheck) showNotification(`更新確認に失敗: ${err}`, 'error');
     } finally {
-        btn.disabled = false;
+        if (btn && !isAutoCheck) btn.disabled = false;
     }
 }
 
@@ -447,10 +454,12 @@ async function applyUpdate() {
     if (!ok) return;
 
     const btn = document.getElementById('apply-update-btn');
+    const statusEl = document.getElementById('update-status');
     if (btn) {
         btn.disabled = true;
         btn.textContent = 'ダウンロード中...';
     }
+    if (statusEl) statusEl.textContent = 'ダウンロード中...';
 
     try {
         await window.__TAURI__.core.invoke('download_and_install_update', {
@@ -461,8 +470,9 @@ async function applyUpdate() {
         showNotification(`アップデートの適用に失敗: ${err}`, 'error');
         if (btn) {
             btn.disabled = false;
-            btn.textContent = 'ダウンロードしてインストール';
+            btn.textContent = 'ダウンロードして更新';
         }
+        if (statusEl) statusEl.textContent = '適用に失敗しました';
     }
 }
 
