@@ -107,6 +107,12 @@ pub struct InstalledPlugin {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ServerProperty {
+    pub key: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum ServerType {
     Vanilla,
@@ -1606,6 +1612,160 @@ impl ServerManager {
             }
         }
         Ok(20)
+    }
+
+    pub async fn get_server_properties(&self, server_id: &str) -> Result<Vec<ServerProperty>> {
+        let server = self
+            .servers
+            .lock()
+            .await
+            .get(server_id)
+            .context("Server not found")?
+            .clone();
+
+        let props_path = server.path.join("server.properties");
+        if !props_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let content = fs::read_to_string(&props_path).await?;
+        let mut result = Vec::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = trimmed.split_once('=') {
+                result.push(ServerProperty {
+                    key: key.trim().to_string(),
+                    value: value.to_string(),
+                });
+            }
+        }
+        Ok(result)
+    }
+
+    pub async fn set_server_property(
+        &self,
+        server_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<()> {
+        let server = self
+            .servers
+            .lock()
+            .await
+            .get(server_id)
+            .context("Server not found")?
+            .clone();
+
+        self.update_server_property(&server.path, key, value).await?;
+
+        // Keep in-memory ServerInfo in sync for properties that have a field
+        if key == "server-port" {
+            if let Ok(port) = value.parse::<u16>() {
+                let mut servers = self.servers.lock().await;
+                if let Some(s) = servers.get_mut(server_id) {
+                    s.port = port;
+                }
+            }
+        } else if key == "max-players" {
+            // max-players is not stored in ServerInfo, nothing to sync
+        }
+
+        Ok(())
+    }
+
+    pub async fn set_server_port(&self, server_id: &str, port: u16) -> Result<()> {
+        let server = self
+            .servers
+            .lock()
+            .await
+            .get(server_id)
+            .context("Server not found")?
+            .clone();
+
+        self.update_server_property(&server.path, "server-port", &port.to_string())
+            .await?;
+
+        let mut servers = self.servers.lock().await;
+        if let Some(s) = servers.get_mut(server_id) {
+            s.port = port;
+        }
+        Ok(())
+    }
+
+    pub async fn get_server_icon(&self, server_id: &str) -> Result<Option<String>> {
+        let server = self
+            .servers
+            .lock()
+            .await
+            .get(server_id)
+            .context("Server not found")?
+            .clone();
+
+        let icon_path = server.path.join("server-icon.png");
+        if !icon_path.exists() {
+            return Ok(None);
+        }
+
+        let data = fs::read(&icon_path).await?;
+        use base64::Engine;
+        Ok(Some(base64::engine::general_purpose::STANDARD.encode(data)))
+    }
+
+    pub async fn set_server_icon(&self, server_id: &str, base64_png: &str) -> Result<()> {
+        use base64::Engine;
+
+        let server = self
+            .servers
+            .lock()
+            .await
+            .get(server_id)
+            .context("Server not found")?
+            .clone();
+
+        // Strip optional data URL prefix
+        let b64 = base64_png
+            .strip_prefix("data:image/png;base64,")
+            .unwrap_or(base64_png);
+
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(b64.trim())
+            .context("Invalid base64 data")?;
+
+        // Validate PNG signature
+        let png_signature: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        if data.len() < 24 || data[..8] != png_signature {
+            anyhow::bail!("不正なPNGファイルです (PNG署名がありません)");
+        }
+
+        // Validate dimensions via IHDR chunk (bytes 16-23 width, 24-27 height, big-endian)
+        let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+        let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+        if width != 64 || height != 64 {
+            anyhow::bail!("アイコンは64x64のPNG画像である必要があります (現在: {}x{})", width, height);
+        }
+
+        let icon_path = server.path.join("server-icon.png");
+        fs::write(&icon_path, &data).await?;
+        Ok(())
+    }
+
+    pub async fn delete_server_icon(&self, server_id: &str) -> Result<()> {
+        let server = self
+            .servers
+            .lock()
+            .await
+            .get(server_id)
+            .context("Server not found")?
+            .clone();
+
+        let icon_path = server.path.join("server-icon.png");
+        if icon_path.exists() {
+            fs::remove_file(&icon_path).await?;
+        }
+        Ok(())
     }
 
     pub async fn install_geyser(&self, server_id: &str) -> Result<()> {

@@ -189,6 +189,12 @@ function initializeEventListeners() {
     document.getElementById('save-max-players-btn').onclick = saveMaxPlayers;
     document.getElementById('increase-players-btn').onclick = () => adjustMaxPlayers(1);
     document.getElementById('decrease-players-btn').onclick = () => adjustMaxPlayers(-1);
+    document.getElementById('save-port-btn').onclick = savePort;
+    document.getElementById('save-memory-btn').onclick = saveMemory;
+    document.getElementById('change-icon-btn').onclick = () => document.getElementById('server-icon-file-input').click();
+    document.getElementById('delete-icon-btn').onclick = deleteServerIcon;
+    document.getElementById('server-icon-file-input').onchange = handleServerIconFile;
+    initMotdToolbar();
     document.getElementById('open-plugins-btn').onclick = openPluginsFolder;
     document.getElementById('detail-folder-btn').onclick = openServerFolder;
 
@@ -341,6 +347,8 @@ function switchTab(btn) {
         }
     } else if (target === 'players') {
         refreshPlayerList();
+    } else if (target === 'settings') {
+        loadPropertiesEditor();
     }
 }
 
@@ -935,12 +943,19 @@ async function showServerDetail(id) {
     }
 
     // Memory row
-    document.getElementById('detail-server-memory').textContent = server.max_memory;
+    document.getElementById('detail-server-max-memory-input').value = server.max_memory;
+    document.getElementById('detail-server-min-memory-input').value = server.min_memory || '1G';
+
+    // Port
+    document.getElementById('detail-server-port-input').value = server.port;
+
+    // Server icon
+    loadServerIcon(id);
 
     // Java Version row
     let javaRow = document.getElementById('detail-java-row');
     if (!javaRow) {
-        const memRow = document.getElementById('detail-server-memory').parentElement;
+        const memRow = document.getElementById('detail-server-max-memory-input').parentElement.parentElement;
         javaRow = document.createElement('div');
         javaRow.id = 'detail-java-row';
         javaRow.className = 'detail-item';
@@ -1019,6 +1034,7 @@ async function showServerDetail(id) {
     try {
         const motd = await invoke('get_motd', { serverId: id });
         document.getElementById('detail-server-motd-input').value = motd || '';
+        updateMotdPreview();
 
         const maxPlayers = await invoke('get_max_players', { serverId: id });
         document.getElementById('detail-server-max-players-input').value = maxPlayers;
@@ -1318,6 +1334,360 @@ function adjustMaxPlayers(delta) {
     let val = parseInt(input.value) || 20;
     val = Math.max(1, val + delta);
     input.value = val;
+}
+
+// =============================================
+// MOTD color codes
+// =============================================
+
+const MOTD_COLORS = [
+    { code: '0', name: 'black', hex: '#000000' },
+    { code: '1', name: 'dark_blue', hex: '#0000AA' },
+    { code: '2', name: 'dark_green', hex: '#00AA00' },
+    { code: '3', name: 'dark_aqua', hex: '#00AAAA' },
+    { code: '4', name: 'dark_red', hex: '#AA0000' },
+    { code: '5', name: 'dark_purple', hex: '#AA00AA' },
+    { code: '6', name: 'gold', hex: '#FFAA00' },
+    { code: '7', name: 'gray', hex: '#AAAAAA' },
+    { code: '8', name: 'dark_gray', hex: '#555555' },
+    { code: '9', name: 'blue', hex: '#5555FF' },
+    { code: 'a', name: 'green', hex: '#55FF55' },
+    { code: 'b', name: 'aqua', hex: '#55FFFF' },
+    { code: 'c', name: 'red', hex: '#FF5555' },
+    { code: 'd', name: 'light_purple', hex: '#FF55FF' },
+    { code: 'e', name: 'yellow', hex: '#FFFF55' },
+    { code: 'f', name: 'white', hex: '#FFFFFF' },
+];
+
+const MOTD_FORMATS = [
+    { code: 'l', label: 'B', title: '太字' },
+    { code: 'o', label: 'I', title: '斜体' },
+    { code: 'n', label: 'U', title: '下線' },
+    { code: 'm', label: 'S', title: '取り消し線' },
+    { code: 'k', label: '?', title: '難読化' },
+];
+
+function initMotdToolbar() {
+    const toolbar = document.getElementById('motd-toolbar');
+    if (!toolbar) return;
+
+    toolbar.innerHTML = '';
+
+    MOTD_COLORS.forEach(c => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'motd-color-btn';
+        btn.title = `§${c.code} (${c.name})`;
+        btn.style.background = c.hex;
+        btn.style.borderColor = c.hex;
+        btn.style.color = (parseInt(c.code, 16) < 8) ? '#fff' : '#000';
+        btn.textContent = c.code;
+        btn.onclick = () => insertMotdCode(c.code);
+        toolbar.appendChild(btn);
+    });
+
+    MOTD_FORMATS.forEach(f => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'motd-format-btn';
+        btn.title = `§${f.code} (${f.title})`;
+        btn.textContent = f.label;
+        btn.onclick = () => insertMotdCode(f.code);
+        toolbar.appendChild(btn);
+    });
+
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'motd-format-btn';
+    reset.title = '§r (リセット)';
+    reset.textContent = 'R';
+    reset.onclick = () => insertMotdCode('r');
+    toolbar.appendChild(reset);
+}
+
+function insertMotdCode(code) {
+    const input = document.getElementById('detail-server-motd-input');
+    if (!input) return;
+    const token = `§${code}`;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    input.value = input.value.slice(0, start) + token + input.value.slice(end);
+    input.focus();
+    input.setSelectionRange(start + token.length, start + token.length);
+    updateMotdPreview();
+}
+
+function updateMotdPreview() {
+    const input = document.getElementById('detail-server-motd-input');
+    const preview = document.getElementById('motd-preview');
+    if (!preview) return;
+    preview.innerHTML = '';
+    renderMinecraftText(preview, input ? input.value : '');
+}
+
+function renderMinecraftText(container, text) {
+    const tokens = text.split('§');
+    if (tokens.length > 0 && tokens[0].length > 0) {
+        container.appendChild(document.createTextNode(tokens[0]));
+    }
+
+    let color = null;
+    let bold = false, italic = false, underline = false, strike = false, obf = false;
+
+    for (let i = 1; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (t.length === 0) { container.appendChild(document.createTextNode('§')); continue; }
+        const code = t[0].toLowerCase();
+
+        if (code === 'r') {
+            color = null; bold = italic = underline = strike = obf = false;
+        } else if (MOTD_COLORS.some(c => c.code === code)) {
+            color = MOTD_COLORS.find(c => c.code === code).hex;
+        } else if (code === 'l') { bold = true; }
+        else if (code === 'o') { italic = true; }
+        else if (code === 'n') { underline = true; }
+        else if (code === 'm') { strike = true; }
+        else if (code === 'k') { obf = true; }
+
+        if (t.length > 1) {
+            const span = document.createElement('span');
+            if (color) span.style.color = color;
+            if (bold) span.style.fontWeight = '700';
+            if (italic) span.style.fontStyle = 'italic';
+            if (underline) span.style.textDecoration = 'underline';
+            if (strike) span.style.textDecoration = 'line-through';
+            if (obf) span.className = 'motd-obfuscated';
+            span.appendChild(document.createTextNode(t.slice(1)));
+            container.appendChild(span);
+        }
+    }
+}
+
+// =============================================
+// Server icon
+// =============================================
+
+async function loadServerIcon(id) {
+    const img = document.getElementById('detail-server-icon-preview');
+    if (!img) return;
+    try {
+        const b64 = await invoke('get_server_icon', { serverId: id });
+        if (b64) {
+            img.src = `data:image/png;base64,${b64}`;
+        } else {
+            img.src = 'app-icon.png';
+        }
+    } catch (e) {
+        console.warn('Failed to load server icon:', e);
+        img.src = 'app-icon.png';
+    }
+}
+
+async function handleServerIconFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file || !currentDetailServerId) return;
+
+    if (file.type !== 'image/png') {
+        showNotification('PNG画像を選択してください', 'error');
+        return;
+    }
+    if (file.size > 512 * 1024) {
+        showNotification('アイコンは512KB以下のPNGを選択してください', 'error');
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+        try {
+            await invoke('set_server_icon', {
+                serverId: currentDetailServerId,
+                base64Png: String(reader.result),
+            });
+            showNotification('アイコンを保存しました', 'success');
+            loadServerIcon(currentDetailServerId);
+        } catch (err) {
+            showNotification(err, 'error');
+        }
+    };
+    reader.onerror = () => showNotification('ファイルの読み込みに失敗しました', 'error');
+    reader.readAsDataURL(file);
+}
+
+async function deleteServerIcon() {
+    if (!currentDetailServerId) return;
+    try {
+        await invoke('delete_server_icon', { serverId: currentDetailServerId });
+        showNotification('アイコンを削除しました', 'success');
+        document.getElementById('detail-server-icon-preview').src = 'app-icon.png';
+    } catch (e) { showNotification(e, 'error'); }
+}
+
+// =============================================
+// Port & Memory
+// =============================================
+
+async function savePort() {
+    if (!currentDetailServerId) return;
+    const input = document.getElementById('detail-server-port-input');
+    const port = parseInt(input.value);
+    if (isNaN(port) || port < 1 || port > 65535) {
+        showNotification('ポートは1〜65535の数値で指定してください', 'error');
+        return;
+    }
+    try {
+        await invoke('set_server_port', { serverId: currentDetailServerId, port });
+        showNotification('ポートを変更しました (サーバー再起動で反映)', 'success');
+    } catch (e) { showNotification(e, 'error'); }
+}
+
+async function saveMemory() {
+    if (!currentDetailServerId) return;
+    const minEl = document.getElementById('detail-server-min-memory-input');
+    const maxEl = document.getElementById('detail-server-max-memory-input');
+    const min = minEl.value.trim();
+    const max = maxEl.value.trim();
+    if (!min || !max) {
+        showNotification('メモリを入力してください (例: 2G)', 'error');
+        return;
+    }
+    try {
+        await invoke('set_server_memory', {
+            serverId: currentDetailServerId,
+            memory: max,
+            minMemory: min,
+        });
+        showNotification('メモリ設定を保存しました (サーバー再起動で反映)', 'success');
+    } catch (e) { showNotification(e, 'error'); }
+}
+
+// =============================================
+// server.properties editor
+// =============================================
+
+const PROPERTY_UI_HINTS = {
+    'gamemode': { type: 'select', options: ['survival', 'creative', 'adventure', 'spectator'] },
+    'difficulty': { type: 'select', options: ['peaceful', 'easy', 'normal', 'hard'] },
+    'pvp': { type: 'select', options: ['true', 'false'] },
+    'online-mode': { type: 'select', options: ['true', 'false'] },
+    'white-list': { type: 'select', options: ['true', 'false'] },
+    'enable-command-block': { type: 'select', options: ['true', 'false'] },
+    'enforce-secure-profile': { type: 'select', options: ['true', 'false'] },
+    'spawn-protection': { type: 'number' },
+    'view-distance': { type: 'number' },
+    'max-players': { type: 'number' },
+    'server-port': { type: 'number' },
+    'motd': { type: 'text' },
+};
+
+const EDITABLE_PROPERTY_ORDER = [
+    'server-port', 'max-players', 'motd', 'gamemode', 'difficulty',
+    'pvp', 'online-mode', 'white-list', 'enable-command-block',
+    'enforce-secure-profile', 'view-distance', 'spawn-protection',
+];
+
+async function loadPropertiesEditor() {
+    const container = document.getElementById('properties-editor');
+    if (!container || !currentDetailServerId) return;
+
+    try {
+        const props = await invoke('get_server_properties', { serverId: currentDetailServerId });
+        renderPropertiesEditor(container, props);
+    } catch (e) {
+        console.warn('Failed to load server.properties:', e);
+        container.innerHTML = '<p class="info-text text-xs text-muted">server.properties を読み込めませんでした。</p>';
+    }
+}
+
+function renderPropertiesEditor(container, props) {
+    const propMap = {};
+    props.forEach(p => { propMap[p.key] = p.value; });
+
+    // Start with all editable keys, then append any extra keys present in file
+    const keys = [...EDITABLE_PROPERTY_ORDER];
+    Object.keys(propMap).forEach(k => {
+        if (!keys.includes(k)) keys.push(k);
+    });
+
+    container.innerHTML = '';
+
+    keys.forEach(key => {
+        const hint = PROPERTY_UI_HINTS[key] || { type: 'text' };
+        const value = propMap[key] !== undefined ? propMap[key] : '';
+        const row = document.createElement('div');
+        row.className = 'prop-row';
+
+        const keyLabel = document.createElement('span');
+        keyLabel.className = 'prop-key';
+        keyLabel.title = key;
+        keyLabel.textContent = key;
+
+        const controlWrap = document.createElement('div');
+        controlWrap.className = 'prop-control';
+
+        let control;
+        if (hint.type === 'select' && hint.options && hint.options.includes(value)) {
+            control = document.createElement('select');
+            control.className = 'prop-select';
+            hint.options.forEach(opt => {
+                const o = document.createElement('option');
+                o.value = opt;
+                o.textContent = opt;
+                if (opt === value) o.selected = true;
+                control.appendChild(o);
+            });
+        } else if (hint.type === 'select') {
+            control = document.createElement('select');
+            control.className = 'prop-select';
+            const opts = hint.options.includes(value) ? hint.options : [value, ...hint.options];
+            opts.forEach(opt => {
+                const o = document.createElement('option');
+                o.value = opt;
+                o.textContent = opt;
+                if (opt === value) o.selected = true;
+                control.appendChild(o);
+            });
+        } else {
+            control = document.createElement('input');
+            control.type = hint.type === 'number' ? 'number' : 'text';
+            control.className = 'input input-sm';
+            control.value = value;
+        }
+
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'btn btn-secondary btn-sm';
+        saveBtn.textContent = '保存';
+        saveBtn.onclick = () => saveProperty(key, control.value);
+
+        controlWrap.appendChild(control);
+        row.appendChild(keyLabel);
+        row.appendChild(controlWrap);
+        row.appendChild(saveBtn);
+        container.appendChild(row);
+    });
+}
+
+async function saveProperty(key, value) {
+    if (!currentDetailServerId) return;
+    try {
+        await invoke('set_server_property', {
+            serverId: currentDetailServerId,
+            key,
+            value: String(value),
+        });
+        showNotification(`${key} を保存しました (サーバー再起動で反映)`, 'success');
+
+        // Sync sidebar fields
+        if (key === 'server-port') {
+            document.getElementById('detail-server-port-input').value = value;
+        } else if (key === 'max-players') {
+            document.getElementById('detail-server-max-players-input').value = value;
+            document.getElementById('detail-players').textContent = `0 / ${value}`;
+        } else if (key === 'motd') {
+            document.getElementById('detail-server-motd-input').value = value;
+            updateMotdPreview();
+        }
+    } catch (e) { showNotification(e, 'error'); }
 }
 
 async function openServerFolder() {

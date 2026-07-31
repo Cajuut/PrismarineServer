@@ -620,19 +620,44 @@
                                             style="margin-top: 10px;" disabled>保存</button>
                                     </div>
                                 </div>
+
+                                <div class="detail-card" style="margin-top: 20px;">
+                                    <h3>server.properties</h3>
+                                    <p class="info-text text-xs text-muted">サーバー停止中に変更することをおすすめします。変更後にサーバーを再起動してください。</p>
+                                    <div id="properties-editor" class="properties-editor"></div>
+                                </div>
                             </div>
                         </div>
                         <div class="detail-sidebar">
+                            <div class="detail-info-card">
+                                <h3>サーバーアイコン</h3>
+                                <div style="display: flex; align-items: center; gap: 12px;">
+                                    <img id="detail-server-icon-preview" src="app-icon.png" alt="icon"
+                                        class="detail-server-icon"
+                                        style="width: 64px; height: 64px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-secondary); object-fit: contain; flex-shrink: 0;" />
+                                    <div style="display: flex; flex-direction: column; gap: 6px; flex: 1;">
+                                        <button id="change-icon-btn" class="btn btn-secondary btn-sm">アイコンを変更</button>
+                                        <button id="delete-icon-btn" class="btn btn-secondary btn-sm">アイコンを削除</button>
+                                    </div>
+                                </div>
+                                <input type="file" id="server-icon-file-input" accept="image/png"
+                                    style="display: none;">
+                                <p class="info-text text-xs text-muted" style="margin-top: 8px;">64x64ピクセルのPNG画像が必要です。</p>
+                            </div>
+
                             <div class="detail-info-card">
                                 <h3>サーバー情報</h3>
                                 <div class="info-grid">
                                     <div class="info-item full-width" style="margin-bottom: 12px;">
                                         <span class="info-label">説明 (MOTD):</span>
-                                        <div style="display: flex; align-items: center; gap: 8px; width: 100%;">
+                                        <div class="motd-toolbar" id="motd-toolbar"></div>
+                                        <div style="display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 8px;">
                                             <input type="text" id="detail-server-motd-input" class="input input-sm"
-                                                style="flex: 1;" placeholder="Minecraft Server" autocomplete="off">
+                                                style="flex: 1;" placeholder="Minecraft Server" autocomplete="off"
+                                                oninput="updateMotdPreview()">
                                             <button id="save-motd-btn" class="btn btn-secondary btn-sm">保存</button>
                                         </div>
+                                        <div id="motd-preview" class="motd-preview"></div>
                                     </div>
                                     <div class="info-item full-width" style="margin-bottom: 12px;">
                                         <span class="info-label">最大人数:</span>
@@ -654,13 +679,24 @@
                                         <span class="info-label">バージョン:</span>
                                         <span class="info-value" id="detail-server-version">-</span>
                                     </div>
-                                    <div class="info-item">
+                                    <div class="info-item full-width">
                                         <span class="info-label">ポート:</span>
-                                        <span class="info-value" id="detail-server-port">-</span>
+                                        <div style="display: flex; align-items: center; gap: 6px; width: 100%;">
+                                            <input type="number" id="detail-server-port-input" class="input input-sm"
+                                                style="flex: 1; min-width: 0;" min="1" max="65535" autocomplete="off">
+                                            <button id="save-port-btn" class="btn btn-secondary btn-sm">保存</button>
+                                        </div>
                                     </div>
-                                    <div class="info-item">
-                                        <span class="info-label">メモリ:</span>
-                                        <span class="info-value" id="detail-server-memory">-</span>
+                                    <div class="info-item full-width">
+                                        <span class="info-label">メモリ (最小/最大):</span>
+                                        <div style="display: flex; align-items: center; gap: 6px; width: 100%;">
+                                            <input type="text" id="detail-server-min-memory-input" class="input input-sm"
+                                                style="width: 64px; text-align: center;" placeholder="1G" autocomplete="off">
+                                            <span style="color: var(--text-muted);">/</span>
+                                            <input type="text" id="detail-server-max-memory-input" class="input input-sm"
+                                                style="width: 64px; text-align: center;" placeholder="4G" autocomplete="off">
+                                            <button id="save-memory-btn" class="btn btn-secondary btn-sm">保存</button>
+                                        </div>
                                     </div>
                                     <div class="info-item full-width" style="margin-top: 8px;">
                             <button id="open-plugins-btn" class="btn btn-secondary btn-sm btn-full">

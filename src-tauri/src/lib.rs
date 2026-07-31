@@ -9,7 +9,7 @@ mod update;
 use bridge::{BridgeStatus, PrismarineBridge};
 use monitor::Monitor;
 use port_manager::PortManager;
-use server_manager::{RestartType, ServerManager, ServerType};
+use server_manager::{RestartType, ServerManager, ServerProperty, ServerType};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::State;
@@ -681,6 +681,92 @@ async fn set_server_memory(
 }
 
 #[tauri::command]
+async fn set_server_port(
+    server_id: String,
+    port: u16,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = state.server_manager.lock().await;
+    manager
+        .set_server_port(&server_id, port)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    manager
+        .save_servers(&state.config_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_server_properties(
+    server_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ServerProperty>, String> {
+    let manager = state.server_manager.lock().await;
+    manager
+        .get_server_properties(&server_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_server_property(
+    server_id: String,
+    key: String,
+    value: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = state.server_manager.lock().await;
+    manager
+        .set_server_property(&server_id, &key, &value)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    manager
+        .save_servers(&state.config_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_server_icon(
+    server_id: String,
+    base64_png: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = state.server_manager.lock().await;
+    manager
+        .set_server_icon(&server_id, &base64_png)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_server_icon(
+    server_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let manager = state.server_manager.lock().await;
+    manager
+        .get_server_icon(&server_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_server_icon(
+    server_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = state.server_manager.lock().await;
+    manager
+        .delete_server_icon(&server_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn fetch_versions(
     server_type: String,
     state: State<'_, AppState>,
@@ -952,6 +1038,12 @@ pub fn run() {
             get_online_players,
             set_auto_restart,
             set_server_memory,
+            set_server_port,
+            get_server_properties,
+            set_server_property,
+            set_server_icon,
+            get_server_icon,
+            delete_server_icon,
             get_proxy_servers,
             add_proxy_server,
             remove_proxy_server,

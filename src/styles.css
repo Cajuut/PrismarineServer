@@ -3354,3 +3354,116 @@ input:checked + .toggle-slider::before {
         transition-duration: 0.01ms !important;
     }
 }
+
+/* =============================================
+   MOTD editor, server icon, port/memory, props
+   ============================================= */
+
+.motd-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.motd-toolbar button {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-main);
+    padding: 0;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.motd-toolbar button:hover {
+    transform: translateY(-1px);
+    border-color: var(--accent);
+}
+
+.motd-toolbar button.motd-format-btn {
+    font-weight: 700;
+}
+
+.motd-preview {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: #1a1a1a;
+    border: 1px solid var(--border-color);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    min-height: 26px;
+    word-break: break-all;
+}
+
+.motd-preview:empty::before {
+    content: "プレビュー";
+    color: var(--text-muted);
+    opacity: 0.6;
+}
+
+.motd-obfuscated {
+    animation: motdBlink 1.2s steps(1) infinite;
+}
+
+@keyframes motdBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+}
+
+.detail-server-icon {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.properties-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.prop-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.prop-row .prop-key {
+    width: 210px;
+    flex-shrink: 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.prop-row .prop-control {
+    flex: 1;
+    min-width: 0;
+}
+
+.prop-row .input-sm {
+    width: 100%;
+}
+
+.prop-row .prop-select {
+    width: 100%;
+    background: var(--bg-secondary);
+    color: var(--text-main);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 0.85rem;
+    outline: none;
+}
