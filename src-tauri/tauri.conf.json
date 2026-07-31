@@ -36,7 +36,12 @@
     ],
     "windows": {
       "nsis": {
-        "installerIcon": "icons/installer.ico"
+        "installerIcon": "icons/installer.ico",
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "headerImage": "icons/header.bmp",
+        "sidebarImage": "icons/sidebar.bmp",
+        "languages": ["Japanese", "English"]
       }
     }
   }

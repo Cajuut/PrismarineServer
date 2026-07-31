@@ -370,6 +370,20 @@
                         <p class="info-text">Prismarine Server Manager v<span id="app-version">1.2</span></p>
                         <p class="info-text">Powered by Tauri + Rust</p>
                     </div>
+
+                    <div class="settings-group">
+                        <h3>アップデート</h3>
+                        <div class="setting-item" style="flex-direction: column; align-items: flex-start; gap: 10px;">
+                            <div style="display: flex; align-items: center; gap: 12px; width: 100%;">
+                                <button id="check-update-btn" class="btn btn-primary btn-sm">更新を確認</button>
+                                <span id="update-status" class="info-text" style="margin: 0;">未確認</span>
+                            </div>
+                            <div id="update-actions" class="hidden" style="display: none; width: 100%;">
+                                <button id="apply-update-btn" class="btn btn-accent btn-sm">ダウンロードしてインストール</button>
+                                <span id="update-notes" class="info-text text-sm" style="display: block; margin-top: 8px;"></span>
+                            </div>
+                        </div>
+                    </div>
                 </section>
 
                 <!-- Server Detail View -->

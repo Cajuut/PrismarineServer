@@ -4,6 +4,7 @@ mod java_detector;
 mod monitor;
 mod port_manager;
 mod server_manager;
+mod update;
 
 use bridge::{BridgeStatus, PrismarineBridge};
 use monitor::Monitor;
@@ -428,6 +429,34 @@ async fn clear_server_logs(server_id: String, state: State<'_, AppState>) -> Res
     Monitor::clear_server_logs(&server_path)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn check_for_updates(_state: State<'_, AppState>) -> Result<update::UpdateInfo, String> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    update::check_for_updates(&current)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn download_and_install_update(
+    download_url: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let installer_path = update::download_installer(&download_url)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    update::install_and_relaunch(&installer_path).map_err(|e| e.to_string())?;
+
+    // Close the app so the updater script can proceed
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let _ = app.exit(0);
+    });
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -877,6 +906,8 @@ pub fn run() {
             get_server_logs,
             clear_server_logs,
             send_server_command,
+            check_for_updates,
+            download_and_install_update,
             open_folder,
             fetch_versions,
             get_motd,
