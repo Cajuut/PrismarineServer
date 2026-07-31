@@ -1,6 +1,6 @@
 [package]
 name = "prismarine"
-version = "1.2.5"
+version = "1.2.6"
 description = "Prismarine - A beautiful Minecraft server management application"
 authors = ["you"]
 edition = "2021"

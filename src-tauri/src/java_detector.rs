@@ -1,10 +1,19 @@
 use std::os::windows::process::CommandExt;
 use std::process::Stdio;
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct JavaVersionInfo {
+    pub major: u8,
+    pub minor: u16,
+    pub patch: u16,
+    pub build: u16, // 0 if unknown
+}
+
 #[derive(Debug, Clone)]
 pub struct JavaInstallation {
     pub path: String,
     pub version: u8, // Major version (8, 17, 21, etc.)
+    pub version_info: Option<JavaVersionInfo>,
 }
 
 /// Find all Java installations on the system
@@ -18,10 +27,11 @@ pub fn find_java_installations() -> Vec<JavaInstallation> {
         #[cfg(not(target_os = "windows"))]
         let java_path = format!("{}/bin/java", java_home);
 
-        if let Some(version) = get_java_version(&java_path) {
+        if let Some((version, version_info)) = probe_java(&java_path) {
             installations.push(JavaInstallation {
                 path: java_path,
                 version,
+                version_info,
             });
         }
     }
@@ -41,10 +51,11 @@ pub fn find_java_installations() -> Vec<JavaInstallation> {
                 for entry in entries.filter_map(|e| e.ok()) {
                     let java_exe = entry.path().join("bin\\java.exe");
                     if java_exe.exists() {
-                        if let Some(version) = get_java_version(&java_exe.to_string_lossy()) {
+                        if let Some((version, version_info)) = probe_java(&java_exe.to_string_lossy()) {
                             installations.push(JavaInstallation {
                                 path: java_exe.to_string_lossy().to_string(),
                                 version,
+                                version_info,
                             });
                         }
                     }
@@ -59,10 +70,11 @@ pub fn find_java_installations() -> Vec<JavaInstallation> {
             for entry in entries.filter_map(|e| e.ok()) {
                 let java_bin = entry.path().join("Contents/Home/bin/java");
                 if java_bin.exists() {
-                    if let Some(version) = get_java_version(&java_bin.to_string_lossy()) {
+                    if let Some((version, version_info)) = probe_java(&java_bin.to_string_lossy()) {
                         installations.push(JavaInstallation {
                             path: java_bin.to_string_lossy().to_string(),
                             version,
+                            version_info,
                         });
                     }
                 }
@@ -76,10 +88,11 @@ pub fn find_java_installations() -> Vec<JavaInstallation> {
             for entry in entries.filter_map(|e| e.ok()) {
                 let java_bin = entry.path().join("bin/java");
                 if java_bin.exists() {
-                    if let Some(version) = get_java_version(&java_bin.to_string_lossy()) {
+                    if let Some((version, version_info)) = probe_java(&java_bin.to_string_lossy()) {
                         installations.push(JavaInstallation {
                             path: java_bin.to_string_lossy().to_string(),
                             version,
+                            version_info,
                         });
                     }
                 }
@@ -106,6 +119,18 @@ pub fn find_java_installations() -> Vec<JavaInstallation> {
         let _ = std::fs::create_dir_all(&local_jdk);
     }
 
+    // Sort installations by version (newest first) so that selection prefers the most
+    // up-to-date Java. This matters because native libraries (e.g. ONNX Runtime in
+    // mods like Terrain Diffusion) fail to load on older Java patch releases.
+    installations.sort_by(|a, b| {
+        match (a.version_info.as_ref(), b.version_info.as_ref()) {
+            (Some(ai), Some(bi)) => bi.cmp(ai),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => b.version.cmp(&a.version),
+        }
+    });
+
     installations
 }
 
@@ -116,10 +141,11 @@ fn scan_java_in_directory(path: &std::path::Path, installations: &mut Vec<JavaIn
     let java_exe = path.join("bin").join("java");
 
     if java_exe.exists() {
-        if let Some(version) = get_java_version(&java_exe.to_string_lossy()) {
+        if let Some((version, version_info)) = probe_java(&java_exe.to_string_lossy()) {
             installations.push(JavaInstallation {
                 path: java_exe.to_string_lossy().to_string(),
                 version,
+                version_info,
             });
         }
     }
@@ -134,10 +160,11 @@ fn scan_java_in_directory(path: &std::path::Path, installations: &mut Vec<JavaIn
                 let sub_java = entry.path().join("bin").join("java");
 
                 if sub_java.exists() {
-                    if let Some(version) = get_java_version(&sub_java.to_string_lossy()) {
+                    if let Some((version, version_info)) = probe_java(&sub_java.to_string_lossy()) {
                         installations.push(JavaInstallation {
                             path: sub_java.to_string_lossy().to_string(),
                             version,
+                            version_info,
                         });
                     }
                 }
@@ -146,8 +173,8 @@ fn scan_java_in_directory(path: &std::path::Path, installations: &mut Vec<JavaIn
     }
 }
 
-/// Get Java major version from a java executable
-pub fn get_java_version(java_path: &str) -> Option<u8> {
+/// Probe a java executable, returning (major version, full version info)
+fn probe_java(java_path: &str) -> Option<(u8, Option<JavaVersionInfo>)> {
     let mut cmd = std::process::Command::new(java_path);
     cmd.arg("-version")
         .stdout(Stdio::piped())
@@ -159,29 +186,46 @@ pub fn get_java_version(java_path: &str) -> Option<u8> {
     }
 
     let output = cmd.output().ok()?;
-
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Parse version from output like:
-    // openjdk version "21.0.1" 2023-10-17
-    // java version "1.8.0_292"
     for line in stderr.lines() {
-        if line.contains("version") {
-            if let Some(version_str) = line.split('"').nth(1) {
-                // Handle "21.0.1" format
-                if let Some(major) = version_str.split('.').next() {
-                    if let Ok(ver) = major.parse::<u8>() {
-                        return Some(ver);
-                    }
-                }
-                // Handle "1.8.0_292" format (Java 8)
-                if version_str.starts_with("1.") {
-                    if let Some(minor) = version_str.split('.').nth(1) {
-                        if let Ok(ver) = minor.parse::<u8>() {
-                            return Some(ver);
-                        }
-                    }
-                }
+        if !line.contains("version") {
+            continue;
+        }
+        let Some(version_str) = line.split('"').nth(1) else {
+            continue;
+        };
+
+        // Handle "21.0.1" format
+        let numeric_parts: Vec<&str> = version_str.split(['.', '-', '_', '+']).collect();
+        let major = numeric_parts.first().and_then(|p| p.parse::<u8>().ok());
+
+        if let Some(major) = major {
+            // Java 9+ format: major.minor.patch(.build)
+            let minor = numeric_parts.get(1).and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
+            let patch = numeric_parts.get(2).and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
+            let build = numeric_parts.get(3).and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
+
+            let info = JavaVersionInfo {
+                major,
+                minor,
+                patch,
+                build,
+            };
+            return Some((major, Some(info)));
+        }
+
+        // Handle "1.8.0_292" format (Java 8)
+        if version_str.starts_with("1.") {
+            if let Some(minor) = numeric_parts.get(1).and_then(|p| p.parse::<u8>().ok()) {
+                let patch = numeric_parts.get(2).and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
+                let info = JavaVersionInfo {
+                    major: minor,
+                    minor: patch,
+                    patch: 0,
+                    build: 0,
+                };
+                return Some((minor, Some(info)));
             }
         }
     }
