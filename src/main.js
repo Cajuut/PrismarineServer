@@ -381,6 +381,7 @@ function showNotification(message, type = 'info', duration = 4000) {
         gap: 12px;
         font-weight: 500;
         font-size: 0.9rem;
+        max-width: 460px;
     `;
 
     const icons = {
@@ -389,7 +390,11 @@ function showNotification(message, type = 'info', duration = 4000) {
         info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3fb8af" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'
     };
     const icon = icons[type] || icons.info;
-    alert.innerHTML = `<span>${icon}</span><span>${message}</span>`;
+    const textSpan = document.createElement('span');
+    textSpan.style.cssText = 'white-space: pre-wrap; word-break: break-word; line-height: 1.4;';
+    textSpan.textContent = String(message);
+    alert.innerHTML = `<span>${icon}</span>`;
+    alert.appendChild(textSpan);
 
     container.appendChild(alert);
 

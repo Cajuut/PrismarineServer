@@ -423,6 +423,22 @@ impl ServerManager {
                 .unwrap_or_else(|| "java".to_string())
         });
 
+        // If the selected Java is an explicit path that no longer exists
+        // (e.g. a downloaded JDK was removed), fall back to system java.
+        let java_cmd = if java_cmd.contains('\\') || java_cmd.contains('/') {
+            if std::path::Path::new(&java_cmd).exists() {
+                java_cmd
+            } else {
+                println!(
+                    "[ServerManager] Java path not found: {}. Falling back to system java",
+                    java_cmd
+                );
+                "java".to_string()
+            }
+        } else {
+            java_cmd
+        };
+
         // Build JVM arguments with performance optimizations
         let mut jvm_args = vec![
             format!("-Xmx{}", server_info.max_memory),
@@ -463,7 +479,7 @@ impl ServerManager {
             }
         }
 
-        let mut cmd = Command::new(java_cmd);
+        let mut cmd = Command::new(java_cmd.clone());
         cmd.args(&jvm_args)
             .current_dir(&server_info.path)
             .stdout(Stdio::piped())
@@ -475,8 +491,22 @@ impl ServerManager {
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
 
-        let mut child = cmd.spawn()
-            .context("Failed to start server process")?;
+        // Validate the server jar exists so the failure message is meaningful
+        if !jar_path.exists() {
+            anyhow::bail!(
+                "サーバーのJARが見つかりません: {} (サーバーを再作成してください)",
+                jar_path.display()
+            );
+        }
+
+        let mut child = cmd.spawn().map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to start server process.\nJava: {}\nError: {}\nJAR: {}",
+                java_cmd,
+                e,
+                jar_path.display()
+            )
+        })?;
 
         let pid = child.id();
 
