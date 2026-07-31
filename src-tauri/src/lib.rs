@@ -428,6 +428,15 @@ async fn get_server_logs(
 }
 
 #[tauri::command]
+async fn get_console_lines(server_id: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let manager = state.server_manager.lock().await;
+    manager
+        .get_console_lines(&server_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn clear_server_logs(server_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let server_path = {
         let manager = state.server_manager.lock().await;
@@ -1002,6 +1011,7 @@ pub fn run() {
             is_upnp_available,
             get_system_stats,
             get_server_logs,
+            get_console_lines,
             clear_server_logs,
             send_server_command,
             check_for_updates,

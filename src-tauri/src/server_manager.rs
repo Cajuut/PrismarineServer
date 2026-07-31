@@ -99,6 +99,21 @@ pub struct PluginSearchResult {
     pub download_url: Option<String>,
 }
 
+/// Append a line to a server's in-memory console buffer (ring buffer).
+fn push_console_line(
+    buffers: &Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>,
+    server_id: &str,
+    line: String,
+) {
+    let mut map = buffers.lock().unwrap();
+    let buf = map.entry(server_id.to_string()).or_default();
+    buf.push(line);
+    if buf.len() > CONSOLE_BUFFER_LIMIT {
+        let overflow = buf.len() - CONSOLE_BUFFER_LIMIT;
+        buf.drain(0..overflow);
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct InstalledPlugin {
     pub name: String,
@@ -148,14 +163,18 @@ pub enum ServerStatus {
 pub struct ServerManager {
     servers: Arc<Mutex<HashMap<String, ServerInfo>>>,
     processes: Arc<std::sync::Mutex<HashMap<String, Child>>>,
+    console_buffers: Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>,
     base_path: PathBuf,
 }
+
+const CONSOLE_BUFFER_LIMIT: usize = 500;
 
 impl ServerManager {
     pub fn new(base_path: PathBuf) -> Self {
         Self {
             servers: Arc::new(Mutex::new(HashMap::new())),
             processes: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            console_buffers: Arc::new(std::sync::Mutex::new(HashMap::new())),
             base_path,
         }
     }
@@ -187,6 +206,11 @@ impl ServerManager {
             }
         }
         Ok(())
+    }
+
+    pub async fn get_console_lines(&self, server_id: &str) -> Result<Vec<String>> {
+        let buffers = self.console_buffers.lock().unwrap();
+        Ok(buffers.get(server_id).cloned().unwrap_or_default())
     }
 
     pub async fn create_server(
@@ -451,14 +475,29 @@ impl ServerManager {
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
 
-        let child = cmd.spawn()
+        let mut child = cmd.spawn()
             .context("Failed to start server process")?;
 
         let pid = child.id();
+
+        // Take the output pipes. They MUST be drained continuously, otherwise the
+        // small anonymous pipe buffer fills up (4KB on Windows) and the JVM blocks
+        // on its next console write. A stalled log write stalls the main thread and
+        // the proxy watchdog (Velocity/BungeeCord) eventually kills the process with
+        // no error visible in the console.
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
         self.processes
             .lock()
             .unwrap()
             .insert(server_id.to_string(), child);
+
+        // Reset the in-memory console buffer for this run
+        {
+            let mut buffers = self.console_buffers.lock().unwrap();
+            buffers.insert(server_id.to_string(), Vec::new());
+        }
 
         let mut servers = self.servers.lock().await;
         if let Some(server) = servers.get_mut(server_id) {
@@ -468,6 +507,68 @@ impl ServerManager {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs());
+        }
+
+        // --- Spawn Console Drain Tasks (prevent pipe deadlock) ---
+        let buffers_mv = self.console_buffers.clone();
+        let id_drain = server_id.to_string();
+        let server_path_drain = server_info.path.clone();
+
+        if let Some(stdout) = stdout {
+            let buffers = buffers_mv.clone();
+            let id = id_drain.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let mut reader = BufReader::new(stdout);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            push_console_line(&buffers, &id, line.trim_end().to_string());
+                        }
+                    }
+                }
+            });
+        }
+
+        if let Some(stderr) = stderr {
+            let buffers = buffers_mv.clone();
+            let id = id_drain.clone();
+            let path = server_path_drain.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+                let mut reader = BufReader::new(stderr);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            let line = line.trim_end().to_string();
+                            push_console_line(&buffers, &id, line.clone());
+                            // Append JVM/stderr output to latest.log so crash
+                            // messages (UnsupportedClassVersion, native OOM, etc.)
+                            // are visible in the console tab.
+                            let log_path = path.join("logs").join("latest.log");
+                            if let Some(parent) = log_path.parent() {
+                                let _ = tokio::fs::create_dir_all(parent).await;
+                            }
+                            if let Ok(mut file) = tokio::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&log_path)
+                                .await
+                            {
+                                let _ = file
+                                    .write_all(format!("[Prismarine-stderr] {}\n", line).as_bytes())
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            });
         }
 
         // --- Spawn Management Monitoring Task ---

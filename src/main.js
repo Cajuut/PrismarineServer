@@ -1258,7 +1258,12 @@ async function refreshDetailLogs() {
     const isAtBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 40;
 
     try {
-        const logs = await invoke('get_server_logs', { serverId: currentDetailServerId, lines: 100 });
+        // Prefer the live console buffer (raw stdout/stderr) when available so
+        // crash messages are always visible; fall back to latest.log otherwise.
+        let logs = await invoke('get_console_lines', { serverId: currentDetailServerId });
+        if (!logs || logs.length === 0) {
+            logs = await invoke('get_server_logs', { serverId: currentDetailServerId, lines: 100 });
+        }
         if (logs.length === 0) {
             if (!container.querySelector('.logs-empty')) {
                 container.innerHTML = '<div class="logs-empty">ログなし</div>';
