@@ -1443,6 +1443,18 @@ async function checkUPnPStatus() {
     } catch (e) { }
 }
 
+window.openExternal = async (url) => {
+    try {
+        if (window.__TAURI__ && window.__TAURI__.shell) {
+            await window.__TAURI__.shell.open(url);
+        } else {
+            window.open(url, '_blank');
+        }
+    } catch (e) {
+        window.open(url, '_blank');
+    }
+};
+
 function startMonitoring() {
     updateSystemStats();
     updateInterval = setInterval(() => {
