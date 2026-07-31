@@ -1926,10 +1926,8 @@ impl ServerManager {
             ServerType::Spigot => "[\"bukkit\", \"spigot\"]",
             ServerType::Forge => "[\"forge\"]",
             ServerType::Vanilla => "[\"bukkit\"]", // Fallback
-            ServerType::Fabric
-            | ServerType::Mohist
-            | ServerType::Taiyitist
-            | ServerType::Banner => "[]", // No plugin support or different system
+            ServerType::Fabric | ServerType::Banner => "[\"fabric\"]",
+            ServerType::Mohist | ServerType::Taiyitist => "[\"forge\"]",
             ServerType::Velocity => "[\"velocity\"]",
             ServerType::BungeeCord => "[\"bungeecord\"]",
             ServerType::Waterfall => "[\"bungeecord\",\"waterfall\"]",
