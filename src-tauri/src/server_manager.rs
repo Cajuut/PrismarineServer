@@ -151,6 +151,17 @@ pub struct ProxyServerEntry {
     pub address: String,
 }
 
+/// Determine the Velocity player-info-forwarding-mode that a backend supports.
+/// Paper/Purpur support modern (secret-based) forwarding; modded and other
+/// backends can only handle legacy (BungeeCord-style) forwarding.
+fn velocity_forwarding_mode(server_type: &ServerType) -> &'static str {
+    if matches!(server_type, ServerType::Paper | ServerType::Purpur) {
+        "modern"
+    } else {
+        "legacy"
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ServerStatus {
     Stopped,
@@ -1823,6 +1834,93 @@ impl ServerManager {
         if let Some(s) = servers.get_mut(server_id) {
             s.port = port;
         }
+        drop(servers);
+
+        // Keep any proxy that this server is registered on pointing at the
+        // new port, otherwise the proxy would get "Connection refused".
+        self.update_proxy_backend_address(server_id).await?;
+        Ok(())
+    }
+
+    /// Update the address of a backend in every proxy config where it is
+    /// registered (matched by server name) after its port changes.
+    async fn update_proxy_backend_address(&self, server_id: &str) -> Result<()> {
+        let server = self
+            .get_server(server_id)
+            .await
+            .context("Server not found")?;
+        let new_address = format!("127.0.0.1:{}", server.port);
+        let all = self.get_servers().await;
+
+        for proxy in all {
+            match proxy.server_type {
+                ServerType::Velocity => {
+                    let config_path = proxy.path.join("velocity.toml");
+                    if !config_path.exists() {
+                        continue;
+                    }
+                    let Ok(content) = fs::read_to_string(&config_path).await else {
+                        continue;
+                    };
+                    let Ok(mut config) = toml::from_str::<toml::Value>(&content) else {
+                        continue;
+                    };
+                    let mut changed = false;
+                    if let Some(servers_table) = config
+                        .get_mut("servers")
+                        .and_then(|v| v.as_table_mut())
+                    {
+                        if let Some(entry) = servers_table.get_mut(&server.name) {
+                            if entry.as_str() != Some(&new_address) {
+                                *entry = toml::Value::String(new_address.clone());
+                                changed = true;
+                            }
+                        }
+                    }
+                    if changed {
+                        if let Ok(new_content) = toml::to_string(&config) {
+                            fs::write(&config_path, new_content).await?;
+                        }
+                    }
+                }
+                ServerType::BungeeCord | ServerType::Waterfall => {
+                    let config_path = proxy.path.join("config.yml");
+                    if !config_path.exists() {
+                        continue;
+                    }
+                    let Ok(content) = fs::read_to_string(&config_path).await else {
+                        continue;
+                    };
+                    let Ok(mut config) =
+                        serde_yaml::from_str::<serde_yaml::Value>(&content)
+                    else {
+                        continue;
+                    };
+                    let mut changed = false;
+                    if let Some(servers_map) = config
+                        .get_mut("servers")
+                        .and_then(|v| v.as_mapping_mut())
+                    {
+                        let key = serde_yaml::Value::String(server.name.clone());
+                        if let Some(entry) = servers_map.get_mut(&key) {
+                            if let Some(entry_map) = entry.as_mapping_mut() {
+                                entry_map.insert(
+                                    serde_yaml::Value::String("address".to_string()),
+                                    serde_yaml::Value::String(new_address.clone()),
+                                );
+                                changed = true;
+                            }
+                        }
+                    }
+                    if changed {
+                        if let Ok(new_content) = serde_yaml::to_string(&config) {
+                            fs::write(&config_path, new_content).await?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -2775,6 +2873,19 @@ impl ServerManager {
             .get_server(proxy_id)
             .await
             .context("Server not found")?;
+
+        // Pick a forwarding mode that the backend being added can support.
+        // Modern only works on Paper/Purpur; everything else needs legacy.
+        let default_mode = {
+            let servers = self.servers.lock().await;
+            let backend_type = servers
+                .values()
+                .find(|s| s.name == name || address == format!("127.0.0.1:{}", s.port))
+                .map(|s| s.server_type.clone())
+                .unwrap_or(ServerType::Spigot);
+            velocity_forwarding_mode(&backend_type).to_string()
+        };
+
         match server.server_type {
             ServerType::Velocity => {
                 let config_path = server.path.join("velocity.toml");
@@ -2783,11 +2894,12 @@ impl ServerManager {
                 let content = if config_path.exists() {
                     fs::read_to_string(&config_path).await?
                 } else {
-                    // Create proper velocity.toml with modern forwarding
+                    // Create proper velocity.toml with a forwarding mode that
+                    // the backend being added actually supports
                     let default_config = format!(
                         r#"# Velocity Configuration - Auto-generated
 online-mode = true
-player-info-forwarding-mode = "modern"
+player-info-forwarding-mode = "{}"
 forwarding-secret-file = "forwarding.secret"
 
 [servers]
@@ -2798,7 +2910,7 @@ try = ["{}"]
 
 [advanced]
 "#,
-                        name, address, name
+                        default_mode, name, address, name
                     );
 
                     // Also create forwarding.secret if it doesn't exist
@@ -2820,7 +2932,7 @@ try = ["{}"]
                         let default_config = format!(
                             r#"# Velocity Configuration - Auto-generated
 online-mode = true
-player-info-forwarding-mode = "modern"
+player-info-forwarding-mode = "{}"
 forwarding-secret-file = "forwarding.secret"
 
 [servers]
@@ -2831,18 +2943,18 @@ try = ["{}"]
 
 [advanced]
 "#,
-                            name, address, name
+                            default_mode, name, address, name
                         );
                         fs::write(&config_path, &default_config).await?;
                         toml::from_str(&default_config)?
                     }
                 };
 
-                // Ensure modern forwarding is enabled
+                // Ensure a forwarding mode is set (preserve an existing explicit choice)
                 if let Some(table) = config.as_table_mut() {
                     table
                         .entry("player-info-forwarding-mode".to_string())
-                        .or_insert(toml::Value::String("modern".to_string()));
+                        .or_insert(toml::Value::String(default_mode));
                     table
                         .entry("online-mode".to_string())
                         .or_insert(toml::Value::Boolean(true));
@@ -3030,6 +3142,13 @@ listeners:
 
                 let new_content = toml::to_string(&config)?;
                 fs::write(config_path, new_content).await?;
+
+                // Recompute the forwarding mode after removing the backend
+                let updated_server = self.get_server(proxy_id).await;
+                if let Some(proxy) = updated_server {
+                    let mode = self.compute_velocity_forwarding_mode(&proxy).await;
+                    self.set_velocity_forwarding_mode(&proxy, &mode).await?;
+                }
                 Ok(())
             }
             ServerType::BungeeCord | ServerType::Waterfall => {
@@ -3049,6 +3168,67 @@ listeners:
         }
     }
 
+    /// Determine the forwarding mode that works for every backend registered
+    /// in the proxy's velocity.toml. Modern only works when ALL backends are
+    /// Paper/Purpur; any modded or other backend forces legacy mode.
+    async fn compute_velocity_forwarding_mode(&self, proxy: &ServerInfo) -> String {
+        if proxy.server_type != ServerType::Velocity {
+            return "modern".to_string();
+        }
+        let config_path = proxy.path.join("velocity.toml");
+        let content = match fs::read_to_string(&config_path).await {
+            Ok(c) => c,
+            Err(_) => return "modern".to_string(),
+        };
+        let config: toml::Value = match toml::from_str(&content) {
+            Ok(c) => c,
+            Err(_) => return "modern".to_string(),
+        };
+        let Some(servers) = config.get("servers").and_then(|v| v.as_table()) else {
+            return "modern".to_string();
+        };
+
+        let known = self.servers.lock().await;
+        for (backend_name, _) in servers.iter() {
+            if backend_name == "try" {
+                continue;
+            }
+            let backend_type = known
+                .values()
+                .find(|s| &s.name == backend_name)
+                .map(|s| s.server_type.clone());
+            match backend_type {
+                Some(t) => {
+                    if velocity_forwarding_mode(&t) != "modern" {
+                        return "legacy".to_string();
+                    }
+                }
+                // Unknown backend -> be conservative and use legacy
+                None => return "legacy".to_string(),
+            }
+        }
+        "modern".to_string()
+    }
+
+    /// Write a `player-info-forwarding-mode` value into the proxy's velocity.toml.
+    async fn set_velocity_forwarding_mode(&self, proxy: &ServerInfo, mode: &str) -> Result<()> {
+        let config_path = proxy.path.join("velocity.toml");
+        if !config_path.exists() {
+            return Ok(());
+        }
+        let content = fs::read_to_string(&config_path).await?;
+        let mut config: toml::Value = toml::from_str(&content)?;
+        if let Some(table) = config.as_table_mut() {
+            table.insert(
+                "player-info-forwarding-mode".to_string(),
+                toml::Value::String(mode.to_string()),
+            );
+        }
+        let new_content = toml::to_string(&config)?;
+        fs::write(config_path, new_content).await?;
+        Ok(())
+    }
+
     /// Configure a backend server for use with a proxy (sets online-mode=false, server-ip=127.0.0.1)
     pub async fn configure_backend_for_proxy(
         &self,
@@ -3063,6 +3243,15 @@ listeners:
             .get_server(proxy_id)
             .await
             .context("Proxy server not found")?;
+
+        // Determine the forwarding mode that fits every backend on this proxy
+        // (modern for Paper/Purpur-only networks, legacy otherwise), then make
+        // sure the proxy config uses it.
+        let proxy_mode = self.compute_velocity_forwarding_mode(&proxy).await;
+        if proxy.server_type == ServerType::Velocity {
+            self.set_velocity_forwarding_mode(&proxy, &proxy_mode)
+                .await?;
+        }
 
         // Update server.properties
         let props_path = backend.path.join("server.properties");
@@ -3094,8 +3283,13 @@ listeners:
             fs::write(&props_path, new_lines.join("\n")).await?;
         }
 
-        // For Paper servers, configure velocity forwarding
-        if matches!(backend.server_type, ServerType::Paper) {
+        // For Paper/Purpur servers, configure velocity forwarding when the
+        // proxy uses modern mode, otherwise disable it in favor of legacy.
+        if matches!(
+            backend.server_type,
+            ServerType::Paper | ServerType::Purpur
+        ) && proxy_mode == "modern"
+        {
             // Read the forwarding secret from proxy
             let secret_path = proxy.path.join("forwarding.secret");
             let secret = if secret_path.exists() {
@@ -3167,6 +3361,68 @@ listeners:
 
             if let Ok(new_content) = serde_yaml::to_string(&config) {
                 let _ = fs::write(paper_config_path, new_content).await;
+            }
+        }
+
+        // In legacy mode, enable BungeeCord-style forwarding for Bukkit-family
+        // backends and disable Velocity's modern secret forwarding on Paper.
+        if proxy_mode == "legacy" {
+            if matches!(
+                backend.server_type,
+                ServerType::Paper | ServerType::Purpur
+            ) {
+                let config_dir = backend.path.join("config");
+                let paper_config_path = config_dir.join("paper-global.yml");
+                if let Ok(content) = fs::read_to_string(&paper_config_path).await {
+                    if let Ok(mut config) =
+                        serde_yaml::from_str::<serde_yaml::Value>(&content)
+                    {
+                        if let Some(proxies) = config
+                            .get_mut("proxies")
+                            .and_then(|v| v.as_mapping_mut())
+                        {
+                            if let Some(velocity) = proxies
+                                .get_mut("velocity")
+                                .and_then(|v| v.as_mapping_mut())
+                            {
+                                velocity.insert(
+                                    serde_yaml::Value::String("enabled".to_string()),
+                                    serde_yaml::Value::Bool(false),
+                                );
+                            }
+                        }
+                        if let Ok(new_content) = serde_yaml::to_string(&config) {
+                            let _ = fs::write(paper_config_path, new_content).await;
+                        }
+                    }
+                }
+            }
+
+            // Enable bungeecord forwarding on Bukkit-family backends
+            if matches!(
+                backend.server_type,
+                ServerType::Paper | ServerType::Purpur | ServerType::Spigot
+            ) {
+                let spigot_config_path = backend.path.join("spigot.yml");
+                if spigot_config_path.exists() {
+                    let content = fs::read_to_string(&spigot_config_path).await?;
+                    if let Ok(mut config) =
+                        serde_yaml::from_str::<serde_yaml::Value>(&content)
+                    {
+                        if let Some(settings) = config
+                            .get_mut("settings")
+                            .and_then(|v| v.as_mapping_mut())
+                        {
+                            settings.insert(
+                                serde_yaml::Value::String("bungeecord".to_string()),
+                                serde_yaml::Value::Bool(true),
+                            );
+                        }
+                        if let Ok(new_content) = serde_yaml::to_string(&config) {
+                            fs::write(spigot_config_path, new_content).await?;
+                        }
+                    }
+                }
             }
         }
 
