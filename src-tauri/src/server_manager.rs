@@ -99,6 +99,14 @@ pub struct PluginSearchResult {
     pub download_url: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InstalledPlugin {
+    pub name: String,
+    pub filename: String,
+    pub plugin_type: String, // "plugin" or "mod"
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum ServerType {
     Vanilla,
@@ -2231,6 +2239,87 @@ impl ServerManager {
         }
 
         Ok(())
+    }
+
+    pub async fn list_installed_plugins(&self, server_id: &str) -> Result<Vec<InstalledPlugin>> {
+        let (server_type, server_path) = {
+            let servers = self.servers.lock().await;
+            let server = servers.get(server_id).context("Server not found")?;
+            (server.server_type.clone(), server.path.clone())
+        };
+
+        let mut results = Vec::new();
+
+        // Determine which directories to scan based on server type
+        let mut dirs: Vec<(PathBuf, String)> = Vec::new(); // (path, type label)
+
+        match server_type {
+            ServerType::Fabric | ServerType::Forge | ServerType::Mohist | ServerType::Taiyitist | ServerType::Banner => {
+                // Hybrid/mod servers: check mods directory
+                let mods_dir = server_path.join("mods");
+                if mods_dir.exists() {
+                    dirs.push((mods_dir, "mod".to_string()));
+                }
+                // For hybrid servers, also check plugins directory
+                if matches!(server_type, ServerType::Mohist | ServerType::Taiyitist | ServerType::Banner) {
+                    let plugins_dir = server_path.join("plugins");
+                    if plugins_dir.exists() {
+                        dirs.push((plugins_dir, "plugin".to_string()));
+                    }
+                }
+            }
+            _ => {
+                // Plugin servers: check plugins directory
+                let plugins_dir = server_path.join("plugins");
+                if plugins_dir.exists() {
+                    dirs.push((plugins_dir, "plugin".to_string()));
+                }
+            }
+        }
+
+        for (dir, plugin_type) in dirs {
+            let mut entries = fs::read_dir(&dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("jar") {
+                    let filename = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = filename.strip_suffix(".jar").unwrap_or(&filename).to_string();
+
+                    // Skip library jars (common patterns)
+                    let lower = name.to_lowercase();
+                    if lower.starts_with("library")
+                        || lower.starts_with("libraries")
+                        || lower.contains("-all")
+                        || lower.contains("-slim")
+                        || lower.contains("loader-")
+                        || lower.contains("launcher")
+                        || lower.contains("bootstrap")
+                    {
+                        continue;
+                    }
+
+                    let size = fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+
+                    results.push(InstalledPlugin {
+                        name,
+                        filename,
+                        plugin_type: plugin_type.clone(),
+                        size,
+                    });
+                }
+            }
+        }
+
+        // Sort by type (plugins first, then mods), then by name
+        results.sort_by(|a, b| {
+            a.plugin_type.cmp(&b.plugin_type)
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+
+        Ok(results)
     }
 
     pub async fn check_and_restart_servers(&self) {

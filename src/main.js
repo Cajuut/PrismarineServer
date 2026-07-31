@@ -975,6 +975,9 @@ async function showServerDetail(id) {
     // Update UI based on server type (Vanilla/Mod/Plugin)
     updateUIForServerType(server.server_type);
 
+    // Load installed plugins list
+    refreshInstalledList();
+
     // Auto Restart Settings
     const autoRestartToggle = document.getElementById('detail-auto-restart-toggle');
     autoRestartToggle.checked = server.auto_restart || false;
@@ -1119,6 +1122,19 @@ function updateUIForServerType(serverType) {
             pluginTabBtn.textContent = 'Plugin/Modストア';
         } else if (category === 'plugin' || category === 'proxy') {
             pluginTabBtn.textContent = 'プラグインストア';
+        }
+    }
+
+    // Installed Tab - update label based on category
+    const installedTabBtn = document.querySelector('.detail-tab-btn[data-target="installed"]');
+    if (installedTabBtn) {
+        installedTabBtn.style.display = category === 'vanilla' ? 'none' : 'inline-flex';
+        if (category === 'mod') {
+            installedTabBtn.textContent = 'インストール済みMod';
+        } else if (category === 'hybrid') {
+            installedTabBtn.textContent = 'インストール済み';
+        } else if (category === 'plugin' || category === 'proxy') {
+            installedTabBtn.textContent = 'インストール済み';
         }
     }
 
@@ -1697,13 +1713,88 @@ async function uninstallPlugin(id, name, source) {
         await invoke('uninstall_plugin', { serverId: currentDetailServerId, pluginName: name });
         showNotification(`${name} を削除しました`, 'success');
         btn.textContent = '削除完了';
-        // Refresh status if simple search results
-        setTimeout(() => searchPlugins(), 1500);
+        // Refresh both search results and installed list
+        setTimeout(() => {
+            searchPlugins();
+            refreshInstalledList();
+        }, 1500);
     } catch (e) {
         showNotification(`削除に失敗しました: ${e}`, 'error');
         btn.disabled = false;
         btn.textContent = '無効化';
     }
+}
+
+async function refreshInstalledList() {
+    if (!currentDetailServerId) return;
+    const container = document.getElementById('installed-list-container');
+    if (!container) return;
+
+    container.innerHTML = '<div class="plugin-list-empty">読み込み中...</div>';
+
+    try {
+        const plugins = await invoke('list_installed_plugins', { serverId: currentDetailServerId });
+
+        if (plugins.length === 0) {
+            container.innerHTML = '<div class="plugin-list-empty">インストール済みのプラグイン/Modはありません</div>';
+            return;
+        }
+
+        // Update title based on what's installed
+        const titleEl = document.getElementById('installed-list-title');
+        const hasPlugins = plugins.some(p => p.plugin_type === 'plugin');
+        const hasMods = plugins.some(p => p.plugin_type === 'mod');
+        if (hasPlugins && hasMods) {
+            titleEl.textContent = 'インストール済みプラグイン & Mod';
+        } else if (hasMods) {
+            titleEl.textContent = 'インストール済みMod';
+        } else {
+            titleEl.textContent = 'インストール済みプラグイン';
+        }
+
+        let html = '';
+        for (const p of plugins) {
+            const sizeStr = formatFileSize(p.size);
+            const typeLabel = p.plugin_type === 'mod' ? 'Mod' : 'Plugin';
+            const typeColor = p.plugin_type === 'mod' ? '#a78bfa' : '#22d3ee';
+
+            html += `
+                <div class="plugin-search-card" style="align-items: center;">
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 2px;">
+                            <span style="font-weight: 600; color: var(--text-main);">${escapeHtml(p.name)}</span>
+                            <span style="font-size: 0.7em; padding: 2px 6px; border-radius: 4px; background: ${typeColor}20; color: ${typeColor};">${typeLabel}</span>
+                        </div>
+                        <div style="font-size: 0.8em; color: var(--text-secondary);">${escapeHtml(p.filename)} · ${sizeStr}</div>
+                    </div>
+                    <button class="btn btn-danger btn-sm" onclick="uninstallInstalledPlugin('${escapeHtml(p.name)}', '${typeLabel}')">削除</button>
+                </div>
+            `;
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = `<div class="plugin-list-empty error">一覧の取得に失敗しました: ${e}</div>`;
+    }
+}
+
+async function uninstallInstalledPlugin(name, typeLabel) {
+    const confirmed = await showConfirmModal(`「${name}」を削除しますか？\nこの操作は元に戻せません。`);
+    if (!confirmed) return;
+
+    try {
+        await invoke('uninstall_plugin', { serverId: currentDetailServerId, pluginName: name });
+        showNotification(`${name} (${typeLabel}) を削除しました`, 'success');
+        refreshInstalledList();
+    } catch (e) {
+        showNotification(`削除に失敗しました: ${e}`, 'error');
+    }
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
 }
 
 async function installPlugin(id, name, source) {

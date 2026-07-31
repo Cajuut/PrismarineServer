@@ -306,6 +306,18 @@ async fn is_plugin_installed(
 }
 
 #[tauri::command]
+async fn list_installed_plugins(
+    server_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<server_manager::InstalledPlugin>, String> {
+    let manager = state.server_manager.lock().await;
+    manager
+        .list_installed_plugins(&server_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_servers(
     state: State<'_, AppState>,
 ) -> Result<Vec<server_manager::ServerInfo>, String> {
@@ -933,6 +945,7 @@ pub fn run() {
             install_spigot_plugin,
             uninstall_plugin,
             is_plugin_installed,
+            list_installed_plugins,
             open_server_folder,
             open_plugins_folder,
             restart_server,

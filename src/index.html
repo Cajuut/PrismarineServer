@@ -433,6 +433,7 @@
                             <div class="detail-tabs">
                                 <button class="detail-tab-btn active" data-target="logs">ログ (Console)</button>
                                 <button class="detail-tab-btn" data-target="players">プレイヤー</button>
+                                <button class="detail-tab-btn" data-target="installed">インストール済み</button>
                                 <button class="detail-tab-btn" data-target="plugins">プラグインストア</button>
                                 <button class="detail-tab-btn" data-target="settings">設定</button>
                             </div>
@@ -526,6 +527,25 @@
                                     <div id="player-list-container"
                                         style="display: flex; flex-direction: column; gap: 8px; max-height: 500px; overflow-y: auto;">
                                         <div style="font-size: 0.9em; color: #888; text-align: center;">読み込み中...</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div id="tab-content-installed" class="detail-tab-content hidden">
+                                <div class="detail-card">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                        <h3 style="margin: 0;" id="installed-list-title">インストール済みプラグイン/Mod</h3>
+                                        <div style="display: flex; gap: 8px;">
+                                            <button class="btn btn-secondary btn-sm" onclick="openPluginsFolder()">
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                                                フォルダを開く
+                                            </button>
+                                            <button class="btn btn-secondary btn-sm" onclick="refreshInstalledList()">🔄 更新</button>
+                                        </div>
+                                    </div>
+                                    <div id="installed-list-container"
+                                        style="display: flex; flex-direction: column; gap: 8px; max-height: 500px; overflow-y: auto;">
+                                        <div class="plugin-list-empty">読み込み中...</div>
                                     </div>
                                 </div>
                             </div>
