@@ -23,22 +23,30 @@ pub struct ServerStats {
 
 pub struct Monitor {
     system: System,
+    last_refresh: std::time::Instant,
 }
 
 impl Monitor {
     pub fn new() -> Self {
         let mut sys = System::new_all();
-        sys.refresh_all(); // Prime it
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        sys.refresh_all(); // Refresh again to get initial CPU readings
+        sys.refresh_all();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_all();
 
-        Self { system: sys }
+        Self {
+            system: sys,
+            last_refresh: std::time::Instant::now(),
+        }
     }
 
     /// Get overall system statistics
+    /// Refreshes at most once per second to avoid getting meaningless delta values
     pub fn get_system_stats(&mut self) -> SystemStats {
-        // Refresh all components
-        self.system.refresh_all();
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_refresh) >= std::time::Duration::from_secs(1) {
+            self.system.refresh_all();
+            self.last_refresh = now;
+        }
 
         let total_memory = self.system.total_memory();
         let used_memory = self.system.used_memory();

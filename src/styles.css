@@ -682,19 +682,27 @@ body {
 
 /* Specific colors for stat icons */
 .stat-card:nth-child(1) .stat-icon {
-    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    background: rgba(79, 110, 187, 0.15);
+    color: #7da2d9;
+    box-shadow: inset 0 0 0 1px rgba(79, 110, 187, 0.2);
 }
 
 .stat-card:nth-child(2) .stat-icon {
-    background: linear-gradient(135deg, #10b981, #059669);
+    background: rgba(45, 155, 120, 0.15);
+    color: #3dbf96;
+    box-shadow: inset 0 0 0 1px rgba(45, 155, 120, 0.2);
 }
 
 .stat-card:nth-child(3) .stat-icon {
-    background: linear-gradient(135deg, #f59e0b, #d97706);
+    background: rgba(168, 139, 66, 0.15);
+    color: #d4b85c;
+    box-shadow: inset 0 0 0 1px rgba(168, 139, 66, 0.2);
 }
 
 .stat-card:nth-child(4) .stat-icon {
-    background: linear-gradient(135deg, #ef4444, #dc2626);
+    background: rgba(175, 100, 58, 0.15);
+    color: #d99060;
+    box-shadow: inset 0 0 0 1px rgba(175, 100, 58, 0.2);
 }
 
 .stat-header h3 {
