@@ -152,14 +152,33 @@ pub struct ProxyServerEntry {
 }
 
 /// Determine the Velocity player-info-forwarding-mode that a backend supports.
-/// Paper/Purpur support modern (secret-based) forwarding; modded and other
-/// backends can only handle legacy (BungeeCord-style) forwarding.
+/// - Paper/Purpur: "modern" (secret-based velocity forwarding)
+/// - Spigot: "legacy" (BungeeCord-style, needs spigot.yml bungeecord=true)
+/// - Everything else (Vanilla/Fabric/Forge/Mohist/...): "none". These have no
+///   native forwarding support, and "legacy" would make them drop the
+///   connection.
 fn velocity_forwarding_mode(server_type: &ServerType) -> &'static str {
-    if matches!(server_type, ServerType::Paper | ServerType::Purpur) {
-        "modern"
-    } else {
-        "legacy"
+    match server_type {
+        ServerType::Paper | ServerType::Purpur => "modern",
+        ServerType::Spigot => "legacy",
+        _ => "none",
     }
+}
+
+/// Check whether a Fabric-family server has FabricProxy-Lite installed in its
+/// mods/ directory. FabricProxy-Lite speaks Velocity "modern" forwarding, so
+/// such a server does not have to drag the whole proxy network down to "none".
+/// Called under the servers lock, so it must be synchronous.
+fn has_fabricproxy_lite_sync(path: &Path) -> bool {
+    if let Ok(entries) = std::fs::read_dir(path.join("mods")) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            if name.ends_with(".jar") && name.contains("fabricproxy") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -212,7 +231,14 @@ impl ServerManager {
             let server_list: Vec<ServerInfo> = serde_json::from_str(&content)?;
 
             let mut servers = self.servers.lock().await;
-            for server in server_list {
+            for mut server in server_list {
+                // Runtime state must never be restored from disk: the process
+                // is not running after an app restart, so reset it. Otherwise a
+                // stale "Crashed" (or Running) status and old PID would persist
+                // forever and make the server appear broken in the launcher.
+                server.status = ServerStatus::Stopped;
+                server.pid = None;
+                server.last_start_time = None;
                 servers.insert(server.id.clone(), server);
             }
         }
@@ -411,9 +437,18 @@ impl ServerManager {
 
         let jar_path = server_info.path.join("server.jar");
 
-        // Auto-select Java based on Minecraft version (or override)
+        // Auto-select Java based on Minecraft version (or override).
+        // Proxy servers (Velocity/BungeeCord/Waterfall) have no Minecraft
+        // version mapping, so use the newest installed JVM instead of a
+        // guessed major version (proxies are compiled against recent JDKs).
+        let is_proxy = matches!(
+            server_info.server_type,
+            ServerType::Velocity | ServerType::BungeeCord | ServerType::Waterfall
+        );
         let java_cmd = if let Some(ver) = server_info.java_version {
             crate::java_detector::select_java_by_version(ver).await
+        } else if is_proxy {
+            crate::java_detector::select_newest_java()
         } else {
             crate::java_detector::select_java_for_minecraft(&server_info.version).await
         }
@@ -2007,42 +2042,145 @@ impl ServerManager {
             .clone();
 
         match server.server_type {
-            ServerType::Vanilla | ServerType::Fabric | ServerType::Mohist => {
-                anyhow::bail!("このサーバータイプはBukkit/Spigotプラグインに対応していません。PaperまたはSpigotを使用してください。")
+            ServerType::Vanilla => {
+                anyhow::bail!("Vanilla サーバーには Geyser を導入できません。Fabric/Paper/Velocity を使用してください。")
             }
-            _ => {}
-        }
+            ServerType::Velocity => {
+                // Proxy-side Geyser: Bedrock clients connect to the proxy port
+                // (UDP 19132) and are forwarded to the backends as normal
+                // players. This is the recommended setup for proxy networks.
+                let plugins_path = server.path.join("plugins");
+                fs::create_dir_all(&plugins_path).await?;
 
-        let plugins_path = server.path.join("plugins");
-        fs::create_dir_all(&plugins_path).await?;
+                // Remove stale Spigot builds that older app versions installed
+                // on proxies. Velocity can't load Spigot plugins, so they just
+                // sit there doing nothing.
+                for stale in ["Geyser-Spigot.jar", "floodgate-spigot.jar"] {
+                    let p = plugins_path.join(stale);
+                    if p.exists() {
+                        fs::remove_file(p).await?;
+                    }
+                }
 
-        // Geyser for Spigot/Paper
-        self.install_plugin(
-            &plugins_path,
-            "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot",
-            "Geyser-Spigot.jar"
-        ).await.context("Failed to install Geyser")?;
+                self.install_plugin(
+                    &plugins_path,
+                    "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/velocity",
+                    "Geyser-Velocity.jar",
+                )
+                .await
+                .context("Failed to install Geyser")?;
 
-        // Floodgate for Spigot/Paper
-        self.install_plugin(
-            &plugins_path,
-            "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot",
-            "floodgate-spigot.jar"
-        ).await.context("Failed to install Floodgate")?;
+                self.install_plugin(
+                    &plugins_path,
+                    "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/velocity",
+                    "floodgate-velocity.jar",
+                )
+                .await
+                .context("Failed to install Floodgate")?;
 
-        // Disable enforce-secure-profile in server.properties
-        self.update_server_property(&server.path, "enforce-secure-profile", "false")
-            .await?;
+                // ViaVersion on the proxy handles cross-version Java clients.
+                self.install_viaversion(server_id).await?;
+            }
+            ServerType::BungeeCord | ServerType::Waterfall => {
+                // Proxy-side Geyser for BungeeCord-family proxies.
+                let plugins_path = server.path.join("plugins");
+                fs::create_dir_all(&plugins_path).await?;
 
-        // "True" AutoGeyser: Install AutoUpdateGeyser plugin to keep them updated
-        // Slug: autoupdategeyser (NewAmazingPVP)
-        println!("Installing AutoUpdateGeyser...");
-        if let Err(e) = self
-            .install_modrinth_plugin(server_id, "autoupdategeyser", "AutoUpdateGeyser")
-            .await
-        {
-            println!("Failed to install AutoUpdateGeyser: {}", e);
-            // Don't fail the whole process, manual update is better than nothing
+                self.install_plugin(
+                    &plugins_path,
+                    "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/bungeecord",
+                    "Geyser-BungeeCord.jar",
+                )
+                .await
+                .context("Failed to install Geyser")?;
+
+                self.install_plugin(
+                    &plugins_path,
+                    "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/bungeecord",
+                    "floodgate-bungee.jar",
+                )
+                .await
+                .context("Failed to install Floodgate")?;
+
+                self.install_viaversion(server_id).await?;
+            }
+            ServerType::Fabric | ServerType::Banner => {
+                // If this Fabric server is behind a proxy, BE must be enabled on
+                // the proxy (Geyser-Velocity). Installing Geyser on the backend
+                // would let Bedrock clients bypass the proxy entirely.
+                if let Some(proxy) = self.find_proxy_for_backend(&server.name).await {
+                    anyhow::bail!(
+                        "このサーバーはプロキシ「{}」に登録されています。Fabric 側ではなくプロキシ側で「クロスプレイを有効化」してください",
+                        proxy.name
+                    );
+                }
+
+                // Fabric API is a dependency of Geyser-Fabric and ViaFabric.
+                if !self.has_mod(server_id, "fabric-api").await {
+                    self.install_modrinth_plugin(server_id, "fabric-api", "Fabric API")
+                        .await?;
+                }
+
+                let mods_path = server.path.join("mods");
+                fs::create_dir_all(&mods_path).await?;
+
+                self.install_plugin(
+                    &mods_path,
+                    "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/fabric",
+                    "Geyser-Fabric.jar",
+                )
+                .await
+                .context("Failed to install Geyser")?;
+
+                self.install_plugin(
+                    &mods_path,
+                    "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/fabric",
+                    "floodgate-fabric.jar",
+                )
+                .await
+                .context("Failed to install Floodgate")?;
+
+                self.install_viaversion(server_id).await?;
+
+                // Bedrock sessions don't carry profile keys.
+                self.update_server_property(&server.path, "enforce-secure-profile", "false")
+                    .await?;
+            }
+            _ => {
+                // Bukkit-family (Paper/Spigot/Purpur/Mohist/Taiyitist)
+                let plugins_path = server.path.join("plugins");
+                fs::create_dir_all(&plugins_path).await?;
+
+                self.install_plugin(
+                    &plugins_path,
+                    "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot",
+                    "Geyser-Spigot.jar",
+                )
+                .await
+                .context("Failed to install Geyser")?;
+
+                self.install_plugin(
+                    &plugins_path,
+                    "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot",
+                    "floodgate-spigot.jar",
+                )
+                .await
+                .context("Failed to install Floodgate")?;
+
+                // Disable enforce-secure-profile in server.properties
+                self.update_server_property(&server.path, "enforce-secure-profile", "false")
+                    .await?;
+
+                // "True" AutoGeyser: Install AutoUpdateGeyser plugin to keep them updated
+                println!("Installing AutoUpdateGeyser...");
+                if let Err(e) = self
+                    .install_modrinth_plugin(server_id, "autoupdategeyser", "AutoUpdateGeyser")
+                    .await
+                {
+                    println!("Failed to install AutoUpdateGeyser: {}", e);
+                    // Don't fail the whole process, manual update is better than nothing
+                }
+            }
         }
 
         Ok(())
@@ -2057,19 +2195,36 @@ impl ServerManager {
             .context("Server not found")?
             .clone();
 
-        match server.server_type {
-            ServerType::Vanilla => {
-                anyhow::bail!("Vanilla servers do not support plugins. Please use Paper or Spigot.")
+        // Fabric/Banner: install the ViaFabric mod instead of the plugin.
+        if matches!(server.server_type, ServerType::Fabric | ServerType::Banner) {
+            if !self.has_mod(server_id, "fabric-api").await {
+                self.install_modrinth_plugin(server_id, "fabric-api", "Fabric API")
+                    .await?;
             }
-            _ => {}
+            self.install_modrinth_plugin(server_id, "viafabric", "ViaFabric")
+                .await?;
+            return Ok(());
         }
+
+        if server.server_type == ServerType::Vanilla {
+            anyhow::bail!("Vanilla servers do not support plugins. Please use Paper, Fabric or Velocity.")
+        }
+
+        // ViaVersion runs on the proxy itself for proxy servers.
+        let platform = match server.server_type {
+            ServerType::Velocity => "VELOCITY",
+            ServerType::BungeeCord | ServerType::Waterfall => "BUNGEECORD",
+            _ => "PAPER",
+        };
 
         let plugins_path = server.path.join("plugins");
         fs::create_dir_all(&plugins_path).await?;
 
         // Fetch latest ViaVersion from Hangar API
-        let api_url =
-            "https://hangar.papermc.io/api/v1/projects/ViaVersion/versions?limit=1&platform=PAPER";
+        let api_url = format!(
+            "https://hangar.papermc.io/api/v1/projects/ViaVersion/versions?limit=1&platform={}",
+            platform
+        );
         println!("Fetching ViaVersion info from: {}", api_url);
 
         let client = reqwest::Client::builder()
@@ -2084,7 +2239,7 @@ impl ServerManager {
 
         let latest_version = results.first().context("No ViaVersion versions found")?;
 
-        let download_url = latest_version["downloads"]["PAPER"]["downloadUrl"]
+        let download_url = latest_version["downloads"][platform]["downloadUrl"]
             .as_str()
             .context("Download URL not found in Hangar response")?;
 
@@ -2127,23 +2282,46 @@ impl ServerManager {
             .get(server_id)
             .context("Server not found")?
             .clone();
-        let plugins_path = server.path.join("plugins");
 
-        // Remove Geyser-Spigot.jar
-        let jar_path = plugins_path.join("Geyser-Spigot.jar");
-        if jar_path.exists() {
-            fs::remove_file(jar_path).await?;
+        let (dir, geyser_file, floodgate_file) = match server.server_type {
+            ServerType::Velocity => ("plugins", "Geyser-Velocity.jar", "floodgate-velocity.jar"),
+            ServerType::Fabric | ServerType::Banner => {
+                ("mods", "Geyser-Fabric.jar", "floodgate-fabric.jar")
+            }
+            _ => ("plugins", "Geyser-Spigot.jar", "floodgate-spigot.jar"),
+        };
+
+        let base = server.path.join(dir);
+        for f in [geyser_file, floodgate_file] {
+            let path = base.join(f);
+            if path.exists() {
+                fs::remove_file(path).await?;
+            }
         }
 
-        // Remove floodgate-spigot.jar
-        let floodgate_path = plugins_path.join("floodgate-spigot.jar");
-        if floodgate_path.exists() {
-            fs::remove_file(floodgate_path).await?;
+        // Velocity also picks up stale Spigot builds left by older app versions.
+        if server.server_type == ServerType::Velocity {
+            for stale in ["Geyser-Spigot.jar", "floodgate-spigot.jar"] {
+                let path = base.join(stale);
+                if path.exists() {
+                    fs::remove_file(path).await?;
+                }
+            }
         }
 
-        // Restore enforce-secure-profile in server.properties
-        self.update_server_property(&server.path, "enforce-secure-profile", "true")
-            .await?;
+        // Restore enforce-secure-profile only where it belongs and the server
+        // isn't managed by a proxy (proxy setups need it disabled).
+        let restore_secure = match server.server_type {
+            ServerType::Velocity => false,
+            ServerType::Fabric | ServerType::Banner => {
+                self.find_proxy_for_backend(&server.name).await.is_none()
+            }
+            _ => true,
+        };
+        if restore_secure {
+            self.update_server_property(&server.path, "enforce-secure-profile", "true")
+                .await?;
+        }
 
         Ok(())
     }
@@ -2156,10 +2334,13 @@ impl ServerManager {
             .get(server_id)
             .context("Server not found")?
             .clone();
-        let plugins_path = server.path.join("plugins");
 
-        // Remove ViaVersion.jar
-        let jar_path = plugins_path.join("ViaVersion.jar");
+        let (dir, filename) = match server.server_type {
+            ServerType::Fabric | ServerType::Banner => ("mods", "ViaFabric.jar"),
+            _ => ("plugins", "ViaVersion.jar"),
+        };
+
+        let jar_path = server.path.join(dir).join(filename);
         if jar_path.exists() {
             fs::remove_file(jar_path).await?;
         }
@@ -2223,15 +2404,29 @@ impl ServerManager {
             .get(server_id)
             .context("Server not found")?
             .clone();
-        let plugins_path = server.path.join("plugins");
 
-        let geyser_exists = plugins_path.join("Geyser-Spigot.jar").exists();
-        let floodgate_exists = plugins_path.join("floodgate-spigot.jar").exists();
+        let (dir, geyser_file, floodgate_file) = match server.server_type {
+            ServerType::Velocity => ("plugins", "Geyser-Velocity.jar", "floodgate-velocity.jar"),
+            ServerType::Fabric | ServerType::Banner => {
+                ("mods", "Geyser-Fabric.jar", "floodgate-fabric.jar")
+            }
+            _ => ("plugins", "Geyser-Spigot.jar", "floodgate-spigot.jar"),
+        };
+        let base = server.path.join(dir);
+
+        let geyser_exists = base.join(geyser_file).exists();
+        let floodgate_exists = base.join(floodgate_file).exists();
 
         println!(
             "[Check] Server: {}, Geyser: {}, Floodgate: {}",
             server_id, geyser_exists, floodgate_exists
         );
+
+        // Velocity proxies have no server.properties; Geyser+Floodgate is
+        // sufficient there.
+        if server.server_type == ServerType::Velocity {
+            return Ok(geyser_exists && floodgate_exists);
+        }
 
         // Check server.properties for enforce-secure-profile=false
         let props_path = server.path.join("server.properties");
@@ -2278,9 +2473,13 @@ impl ServerManager {
             .get(server_id)
             .context("Server not found")?
             .clone();
-        let plugins_path = server.path.join("plugins");
 
-        Ok(plugins_path.join("ViaVersion.jar").exists())
+        let (dir, filename) = match server.server_type {
+            ServerType::Fabric | ServerType::Banner => ("mods", "ViaFabric.jar"),
+            _ => ("plugins", "ViaVersion.jar"),
+        };
+
+        Ok(server.path.join(dir).join(filename).exists())
     }
 
     pub async fn search_plugins(
@@ -3001,6 +3200,58 @@ try = ["{}"]
                     }
                 }
 
+                // Remove Velocity's auto-generated sample servers (from its
+                // default velocity.toml) so they don't remain as stale backends
+                // causing "Connection refused" when the proxy falls back to them.
+                let sample_names = ["lobby", "factions", "minigames"];
+                let sample_addresses = [
+                    "127.0.0.1:30066",
+                    "127.0.0.1:30067",
+                    "127.0.0.1:30068",
+                ];
+                if let Some(servers_table) =
+                    config.get_mut("servers").and_then(|v| v.as_table_mut())
+                {
+                    let to_remove: Vec<String> = servers_table
+                        .iter()
+                        .filter(|(k, v)| {
+                            k.as_str() != "try"
+                                && k.as_str() != name
+                                && sample_names.contains(&k.as_str())
+                                && v.as_str()
+                                    .map_or(false, |addr| sample_addresses.contains(&addr))
+                        })
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    for key in to_remove {
+                        servers_table.remove(&key);
+                    }
+                    // Drop the sample servers from the try array too
+                    if let Some(try_arr) = servers_table
+                        .get_mut("try")
+                        .and_then(|v| v.as_array_mut())
+                    {
+                        try_arr.retain(|v| {
+                            v.as_str().map_or(true, |s| !sample_names.contains(&s))
+                        });
+                    }
+                }
+                // Remove the sample forced-hosts entries as well
+                if let Some(fh) = config.get_mut("forced-hosts").and_then(|v| v.as_table_mut()) {
+                    let to_remove: Vec<String> = fh
+                        .iter()
+                        .filter(|(k, _)| {
+                            k.as_str() == "factions.example.com"
+                                || k.as_str() == "lobby.example.com"
+                                || k.as_str() == "minigames.example.com"
+                        })
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    for key in to_remove {
+                        fh.remove(&key);
+                    }
+                }
+
                 let new_content = toml::to_string(&config)?;
                 fs::write(config_path, new_content).await?;
                 Ok(())
@@ -3169,8 +3420,11 @@ listeners:
     }
 
     /// Determine the forwarding mode that works for every backend registered
-    /// in the proxy's velocity.toml. Modern only works when ALL backends are
-    /// Paper/Purpur; any modded or other backend forces legacy mode.
+    /// in the proxy's velocity.toml. The proxy-wide mode must be no more
+    /// capable than the least capable backend:
+    /// - all Paper/Purpur       -> "modern"
+    /// - all Bukkit-family      -> "legacy"
+    /// - any modded/vanilla/etc -> "none" (they drop legacy connections)
     async fn compute_velocity_forwarding_mode(&self, proxy: &ServerInfo) -> String {
         if proxy.server_type != ServerType::Velocity {
             return "modern".to_string();
@@ -3189,25 +3443,38 @@ listeners:
         };
 
         let known = self.servers.lock().await;
+        let mut any_legacy_only = false;
         for (backend_name, _) in servers.iter() {
             if backend_name == "try" {
                 continue;
             }
-            let backend_type = known
-                .values()
-                .find(|s| &s.name == backend_name)
-                .map(|s| s.server_type.clone());
+            let backend_info = known.values().find(|s| &s.name == backend_name);
+            let backend_type = backend_info.map(|s| s.server_type.clone());
             match backend_type {
-                Some(t) => {
-                    if velocity_forwarding_mode(&t) != "modern" {
-                        return "legacy".to_string();
+                Some(t) => match velocity_forwarding_mode(&t) {
+                    "modern" => {}
+                    "legacy" => any_legacy_only = true,
+                    // none-only type. Fabric/Banner with FabricProxy-Lite can
+                    // handle "modern", so they don't force "none" anymore.
+                    _ => {
+                        let has_fpl = backend_info
+                            .map(|s| has_fabricproxy_lite_sync(&s.path))
+                            .unwrap_or(false);
+                        if has_fpl && matches!(t, ServerType::Fabric | ServerType::Banner) {
+                            continue;
+                        }
+                        return "none".to_string();
                     }
-                }
-                // Unknown backend -> be conservative and use legacy
-                None => return "legacy".to_string(),
+                },
+                // Unknown backend -> be conservative and use none
+                None => return "none".to_string(),
             }
         }
-        "modern".to_string()
+        if any_legacy_only {
+            "legacy".to_string()
+        } else {
+            "modern".to_string()
+        }
     }
 
     /// Write a `player-info-forwarding-mode` value into the proxy's velocity.toml.
@@ -3223,6 +3490,22 @@ listeners:
                 "player-info-forwarding-mode".to_string(),
                 toml::Value::String(mode.to_string()),
             );
+        }
+        let new_content = toml::to_string(&config)?;
+        fs::write(config_path, new_content).await?;
+        Ok(())
+    }
+
+    /// Write a boolean top-level value into the proxy's velocity.toml.
+    async fn set_velocity_bool(&self, proxy: &ServerInfo, key: &str, value: bool) -> Result<()> {
+        let config_path = proxy.path.join("velocity.toml");
+        if !config_path.exists() {
+            return Ok(());
+        }
+        let content = fs::read_to_string(&config_path).await?;
+        let mut config: toml::Value = toml::from_str(&content)?;
+        if let Some(table) = config.as_table_mut() {
+            table.insert(key.to_string(), toml::Value::Boolean(value));
         }
         let new_content = toml::to_string(&config)?;
         fs::write(config_path, new_content).await?;
@@ -3251,6 +3534,17 @@ listeners:
         if proxy.server_type == ServerType::Velocity {
             self.set_velocity_forwarding_mode(&proxy, &proxy_mode)
                 .await?;
+            // Don't require clients to present a valid profile key signature:
+            // offine/cracked backends behind the proxy can't validate it.
+            self.set_velocity_bool(&proxy, "force-key-authentication", false)
+                .await?;
+            // With "none" forwarding the real player session can't be passed
+            // to the backend, so a premium proxy would make backends kick
+            // players with "invalid_public_key_signature". Run offline instead.
+            if proxy_mode == "none" {
+                self.set_velocity_bool(&proxy, "online-mode", false)
+                    .await?;
+            }
         }
 
         // Update server.properties
@@ -3260,6 +3554,7 @@ listeners:
             let mut new_lines: Vec<String> = Vec::new();
             let mut has_online_mode = false;
             let mut has_server_ip = false;
+            let mut has_secure_profile = false;
 
             for line in content.lines() {
                 if line.starts_with("online-mode=") {
@@ -3268,6 +3563,13 @@ listeners:
                 } else if line.starts_with("server-ip=") {
                     new_lines.push("server-ip=127.0.0.1".to_string());
                     has_server_ip = true;
+                } else if line.starts_with("enforce-secure-profile=") {
+                    // Behind a proxy the profile key signature can't be
+                    // validated, which kicks players with
+                    // "invalid_public_key_signature"/"Failed to validate
+                    // profile key".
+                    new_lines.push("enforce-secure-profile=false".to_string());
+                    has_secure_profile = true;
                 } else {
                     new_lines.push(line.to_string());
                 }
@@ -3278,6 +3580,9 @@ listeners:
             }
             if !has_server_ip {
                 new_lines.push("server-ip=127.0.0.1".to_string());
+            }
+            if !has_secure_profile {
+                new_lines.push("enforce-secure-profile=false".to_string());
             }
 
             fs::write(&props_path, new_lines.join("\n")).await?;
@@ -3450,6 +3755,181 @@ listeners:
             "Configured backend {} for proxy {}",
             backend.name, proxy.name
         );
+        Ok(())
+    }
+
+    /// Check whether a mod (matched by a substring of the jar filename) is
+    /// installed in the server's mods/ directory.
+    async fn has_mod(&self, server_id: &str, name_substring: &str) -> bool {
+        let Some(server) = self.get_server(server_id).await else {
+            return false;
+        };
+        if let Ok(mut entries) = fs::read_dir(server.path.join("mods")).await {
+            let lower = name_substring.to_lowercase();
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if name.ends_with(".jar") && name.contains(&lower) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Find the first proxy server that has `backend_name` registered in its
+    /// servers config (velocity.toml for Velocity, config.yml for
+    /// BungeeCord/Waterfall).
+    async fn find_proxy_for_backend(&self, backend_name: &str) -> Option<ServerInfo> {
+        let servers = self.servers.lock().await;
+        for s in servers.values() {
+            if s.server_type == ServerType::Velocity {
+                let config_path = s.path.join("velocity.toml");
+                if let Ok(content) = fs::read_to_string(&config_path).await {
+                    if let Ok(config) = toml::from_str::<toml::Value>(&content) {
+                        if let Some(servers_tbl) =
+                            config.get("servers").and_then(|v| v.as_table())
+                        {
+                            if servers_tbl.contains_key(backend_name) {
+                                return Some(s.clone());
+                            }
+                        }
+                    }
+                }
+            } else if matches!(
+                s.server_type,
+                ServerType::BungeeCord | ServerType::Waterfall
+            ) {
+                let config_path = s.path.join("config.yml");
+                if let Ok(content) = fs::read_to_string(&config_path).await {
+                    if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                        if let Some(srvs) = yaml.get("servers").and_then(|v| v.as_mapping()) {
+                            if srvs.contains_key(serde_yaml::Value::String(
+                                backend_name.to_string(),
+                            )) {
+                                return Some(s.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Install FabricProxy-Lite (and its Fabric API dependency) on a
+    /// Fabric/Banner backend and set up Velocity "modern" forwarding with a
+    /// shared secret. This restores premium skins and block placement that are
+    /// lost when the whole network is forced to "none" forwarding +
+    /// online-mode=false.
+    ///
+    /// `proxy_id` is optional; when omitted the proxy is auto-detected from the
+    /// backend's registrations.
+    pub async fn install_fabricproxy_lite(
+        &self,
+        server_id: &str,
+        proxy_id: Option<&str>,
+    ) -> Result<()> {
+        let server = self
+            .get_server(server_id)
+            .await
+            .context("Backend server not found")?;
+        if !matches!(server.server_type, ServerType::Fabric | ServerType::Banner) {
+            anyhow::bail!(
+                "FabricProxy-Lite は Fabric 系 (Fabric/Banner) サーバー専用です"
+            );
+        }
+
+        // Fabric API is a hard dependency of FabricProxy-Lite.
+        if !self.has_mod(server_id, "fabric-api").await {
+            println!("Installing Fabric API on {}...", server.name);
+            self.install_modrinth_plugin(server_id, "fabric-api", "Fabric API")
+                .await?;
+        }
+
+        // Install FabricProxy-Lite itself.
+        if !self.has_mod(server_id, "fabricproxy").await {
+            println!("Installing FabricProxy-Lite on {}...", server.name);
+            self.install_modrinth_plugin(server_id, "fabricproxy-lite", "FabricProxy-Lite")
+                .await?;
+        }
+
+        // Determine the proxy (explicit id or auto-detected).
+        let proxy = if let Some(pid) = proxy_id {
+            self.get_server(pid).await.context("Proxy server not found")?
+        } else if let Some(p) = self.find_proxy_for_backend(&server.name).await {
+            p
+        } else {
+            anyhow::bail!(
+                "このサーバーを登録しているプロキシが見つかりません。先に ProxyNode に追加してください"
+            );
+        };
+        if proxy.server_type != ServerType::Velocity {
+            anyhow::bail!("FabricProxy-Lite の自動設定は Velocity プロキシのみ対応しています");
+        }
+
+        // Make sure the proxy has a forwarding secret.
+        let secret_path = proxy.path.join("forwarding.secret");
+        let secret = if secret_path.exists() {
+            fs::read_to_string(&secret_path)
+                .await?
+                .trim()
+                .to_string()
+        } else {
+            let new_secret = format!("{:x}{:x}", rand::random::<u64>(), rand::random::<u64>());
+            fs::write(&secret_path, &new_secret).await?;
+            new_secret
+        };
+
+        // Write FabricProxy-Lite's config with the shared secret.
+        let config_dir = server.path.join("config");
+        fs::create_dir_all(&config_dir).await?;
+        let fpl_config_path = config_dir.join("FabricProxy-Lite.toml");
+        let fpl_config = format!(
+            "# Generated by Prismarine Core\nhackOnlineMode = false\nhackEarlySend = false\nhackMessageChain = false\ndisconnectMessage = \"This server requires you to connect through Velocity.\"\nsecret = \"{}\"\n",
+            secret
+        );
+        fs::write(&fpl_config_path, fpl_config).await?;
+
+        // Switch Velocity to modern forwarding and back to premium
+        // (online-mode=true). Premium players keep skins and the real profile,
+        // which fixes both the missing-skin and block-placement issues.
+        self.set_velocity_forwarding_mode(&proxy, "modern").await?;
+        self.set_velocity_bool(&proxy, "force-key-authentication", false)
+            .await?;
+        self.set_velocity_bool(&proxy, "online-mode", true).await?;
+
+        // Re-run backend configuration now that the proxy mode is modern.
+        // configure_backend_for_proxy keeps online-mode=true for modern mode.
+        self.configure_backend_for_proxy(server_id, &proxy.id).await?;
+
+        println!(
+            "FabricProxy-Lite setup complete on {} (proxy: {})",
+            server.name, proxy.name
+        );
+        Ok(())
+    }
+
+    /// One-shot setup for registering a backend to a proxy. Runs the standard
+    /// proxy backend configuration and, for Fabric/Banner backends, installs
+    /// FabricProxy-Lite with a shared secret and modern forwarding.
+    pub async fn configure_proxy_backend(
+        &self,
+        backend_id: &str,
+        proxy_id: &str,
+    ) -> Result<()> {
+        let backend = self
+            .get_server(backend_id)
+            .await
+            .context("Backend server not found")?;
+
+        if matches!(backend.server_type, ServerType::Fabric | ServerType::Banner) {
+            self.install_fabricproxy_lite(backend_id, Some(proxy_id))
+                .await?;
+        } else {
+            self.configure_backend_for_proxy(backend_id, proxy_id)
+                .await?;
+        }
+
         Ok(())
     }
 }

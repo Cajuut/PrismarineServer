@@ -274,6 +274,15 @@ pub async fn select_java_by_version(required: u8) -> Option<String> {
     None
 }
 
+/// Select the newest Java installation available. Used for proxy servers
+/// (Velocity/BungeeCord/Waterfall): their version string is not a Minecraft
+/// version, so the MC-based mapping would pick an outdated JVM even though
+/// newer proxy builds are compiled against recent JDKs.
+pub fn select_newest_java() -> Option<String> {
+    // find_java_installations() sorts newest first.
+    find_java_installations().first().map(|j| j.path.clone())
+}
+
 /// Select best Java for Minecraft version, download if missing
 pub async fn select_java_for_minecraft(mc_version: &str) -> Option<String> {
     let required = get_required_java_version(mc_version);

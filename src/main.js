@@ -1047,6 +1047,7 @@ async function showServerDetail(id) {
 
         // Check Geyser/ViaVersion status
         updatePresetButtons(id);
+        refreshFabricProxyLiteStatus(id);
     } catch (e) { console.warn('Failed to fetch details:', e); }
 
     // Refresh Logs
@@ -1164,8 +1165,8 @@ function updateUIForServerType(serverType) {
         storeTypeSelect.style.display = category === 'hybrid' ? 'inline-flex' : 'none';
     }
 
-    // Geyser/ViaVersion areas - show for plugin and hybrid servers and proxy
-    const showGeyser = category === 'plugin' || category === 'hybrid' || category === 'proxy';
+    // Geyser/ViaVersion areas - show for plugin, hybrid, proxy and mod servers
+    const showGeyser = category === 'plugin' || category === 'hybrid' || category === 'proxy' || category === 'mod';
     if (geyserArea) geyserArea.style.display = showGeyser ? 'block' : 'none';
     if (viaArea) viaArea.style.display = showGeyser ? 'block' : 'none';
 
@@ -1189,6 +1190,13 @@ function updateUIForServerType(serverType) {
 
     // Update store UI elements
     updateStoreUIForType();
+
+    // Show the FabricProxy-Lite setup card only for Fabric-family servers
+    const fplCard = document.getElementById('fabricproxy-lite-card');
+    if (fplCard) {
+        fplCard.style.display =
+            (serverType === 'Fabric' || serverType === 'Banner') ? 'block' : 'none';
+    }
 }
 
 // Update store-specific UI elements based on store type selection
@@ -1252,6 +1260,47 @@ async function updatePresetButtons(id) {
              </button>`;
     } catch (e) {
         console.error('Failed to check preset status:', e);
+    }
+}
+
+async function refreshFabricProxyLiteStatus(id) {
+    const area = document.getElementById('fabricproxy-lite-status-area');
+    if (!area) return;
+
+    try {
+        const plugins = await invoke('list_installed_plugins', { serverId: id });
+        const installed = (plugins || []).some(p =>
+            String(p.filename || '').toLowerCase().includes('fabricproxy'));
+        const downloadSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+        area.innerHTML = installed
+            ? `<button id="install-fabricproxy-lite-btn" class="btn btn-secondary btn-full" onclick="installFabricProxyLite()">${downloadSvg}FabricProxy-Lite を再設定</button>`
+            : `<button id="install-fabricproxy-lite-btn" class="btn btn-accent btn-full" onclick="installFabricProxyLite()">${downloadSvg}導入して自動設定</button>`;
+    } catch (e) {
+        console.error('Failed to check FabricProxy-Lite status:', e);
+    }
+}
+
+async function installFabricProxyLite() {
+    if (!currentDetailServerId) return;
+    const btn = document.getElementById('install-fabricproxy-lite-btn');
+    const original = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '設定中...'; }
+
+    try {
+        await invoke('install_fabricproxy_lite', {
+            serverId: currentDetailServerId,
+            proxyId: null,
+        });
+        showNotification(
+            'FabricProxy-Lite を導入・設定しました。Fabric サーバーと Velocity を再起動すると有効になります',
+            'success'
+        );
+        refreshFabricProxyLiteStatus(currentDetailServerId);
+        refreshInstalledList();
+    } catch (e) {
+        showNotification(`FabricProxy-Lite の設定に失敗: ${e}`, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = original; }
     }
 }
 
@@ -2851,7 +2900,7 @@ async function applyConnectionToProxy(fromId, toId) {
                 address: '127.0.0.1:' + toServer.port,
                 addToTry: true  // Direct connection to proxy
             });
-            await invoke('configure_backend_for_proxy', {
+            await invoke('configure_proxy_backend', {
                 backendId: toId,
                 proxyId: fromId
             });
@@ -2868,7 +2917,7 @@ async function applyConnectionToProxy(fromId, toId) {
                 address: '127.0.0.1:' + fromServer.port,
                 addToTry: true  // Direct connection to proxy
             });
-            await invoke('configure_backend_for_proxy', {
+            await invoke('configure_proxy_backend', {
                 backendId: fromId,
                 proxyId: toId
             });
@@ -2895,7 +2944,7 @@ async function applyConnectionToProxy(fromId, toId) {
                     address: '127.0.0.1:' + serverToAdd.port,
                     addToTry: false  // Indirect connection, don't add to try array
                 });
-                await invoke('configure_backend_for_proxy', {
+                await invoke('configure_proxy_backend', {
                     backendId: serverId,
                     proxyId
                 });
@@ -3142,6 +3191,10 @@ function openProxyNodeModal() {
 
     modal.classList.remove('hidden');
     requestAnimationFrame(() => modal.classList.add('active'));
+
+    // Reset the BE checkbox to the recommended default each time.
+    const geyserCheckbox = document.getElementById('proxynode-geyser-checkbox');
+    if (geyserCheckbox) geyserCheckbox.checked = true;
 }
 
 function closeProxyNodeModal() {
@@ -3190,10 +3243,13 @@ async function createProxyNode() {
         port: cb.dataset.port
     }));
 
+    const enableGeyser = document.getElementById('proxynode-geyser-checkbox')?.checked ?? false;
+
     showNotification(isAddingBackend ? 'バックエンドを追加中...' : 'ProxyNodeを作成中...', 'info');
 
     try {
-        // Add each backend to the proxy
+        // Add each backend to the proxy and auto-configure everything:
+        // standard proxy settings + FabricProxy-Lite for Fabric/Banner backends.
         for (const backend of backendIds) {
             await invoke('add_proxy_server', {
                 proxyId,
@@ -3202,10 +3258,15 @@ async function createProxyNode() {
                 addToTry: true
             });
 
-            await invoke('configure_backend_for_proxy', {
+            await invoke('configure_proxy_backend', {
                 backendId: backend.id,
                 proxyId
             });
+        }
+
+        // Optionally enable BE support (Geyser/Floodgate/ViaVersion) on the proxy.
+        if (enableGeyser && backendIds.length > 0) {
+            await invoke('install_geyser_support', { serverId: proxyId });
         }
 
         if (isAddingBackend) {
@@ -3564,7 +3625,7 @@ async function addServerToProxyNode(serverId) {
             addToTry: true
         });
 
-        await invoke('configure_backend_for_proxy', {
+        await invoke('configure_proxy_backend', {
             backendId: serverId,
             proxyId: pn.proxyId
         });

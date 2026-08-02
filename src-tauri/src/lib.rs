@@ -266,6 +266,19 @@ async fn install_modrinth_plugin(
 }
 
 #[tauri::command]
+async fn install_fabricproxy_lite(
+    server_id: String,
+    proxy_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = state.server_manager.lock().await;
+    manager
+        .install_fabricproxy_lite(&server_id, proxy_id.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn install_spigot_plugin(
     server_id: String,
     resource_id: String,
@@ -889,6 +902,19 @@ async fn configure_backend_for_proxy(
 }
 
 #[tauri::command]
+async fn configure_proxy_backend(
+    backend_id: String,
+    proxy_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let manager = state.server_manager.lock().await;
+    manager
+        .configure_proxy_backend(&backend_id, &proxy_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn start_bridge(
     port: u16,
     remote_server: Option<String>,
@@ -1038,6 +1064,7 @@ pub fn run() {
             search_plugins,
             install_plugin,
             install_modrinth_plugin,
+            install_fabricproxy_lite,
             install_spigot_plugin,
             uninstall_plugin,
             is_plugin_installed,
@@ -1058,6 +1085,7 @@ pub fn run() {
             add_proxy_server,
             remove_proxy_server,
             configure_backend_for_proxy,
+            configure_proxy_backend,
             get_ops,
             grant_op,
             revoke_op,

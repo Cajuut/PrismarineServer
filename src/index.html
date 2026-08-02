@@ -745,6 +745,17 @@
                                     </button>
                                 </div>
                             </div>
+
+                            <div class="detail-info-card" id="fabricproxy-lite-card" style="display: none;">
+                                <h3>Velocity連携 (FabricProxy-Lite)</h3>
+                                <p class="info-text text-sm">Fabric サーバーを Velocity の "modern" 転送に対応させます。スキン表示やブロック設置など、プロキシ経由で失われがちなプレミアム機能を復活させるための推奨設定です。</p>
+                                <div id="fabricproxy-lite-status-area" style="margin-top: 10px;">
+                                    <button id="install-fabricproxy-lite-btn" class="btn btn-accent btn-full" onclick="installFabricProxyLite()">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                        導入して自動設定
+                                    </button>
+                                </div>
+                            </div>
                         </div> <!-- End detail-sidebar -->
                     </div> <!-- End detail-content -->
                 </section>
@@ -933,6 +944,16 @@
                         style="max-height: 200px; overflow-y: auto; background: rgba(0,0,0,0.2); border-radius: 6px; padding: 10px;">
                         <!-- Populated dynamically -->
                     </div>
+                </div>
+
+                <div class="form-group" id="proxynode-geyser-group">
+                    <label class="checkbox-item" style="display: flex; align-items: center; gap: 10px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer;">
+                        <input type="checkbox" id="proxynode-geyser-checkbox" checked>
+                        <span style="flex: 1;">
+                            <strong>BE対応 (Geyser) も自動設定</strong>
+                            <span style="display: block; color: #888; font-size: 0.8em; margin-top: 2px;">プロキシに Geyser/Floodgate/ViaVersion を導入し、統合版 (Switch/スマホ) からの参加を可能にします。Fabric バックエンドには FabricProxy-Lite も自動設定します</span>
+                        </span>
+                    </label>
                 </div>
             </div>
             <div class="modal-footer">
